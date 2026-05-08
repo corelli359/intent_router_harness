@@ -385,7 +385,7 @@ def test_final_task_completion_clears_active_runtime_memory(tmp_path: Path) -> N
                 output={"message": "done"},
                 diagnostics={
                     "_router_context": {
-                        "skill_names": ["finance-routing"],
+                        "skill_names": ["transfer-routing"],
                         "reference_ids": ["ref_001"],
                     }
                 },
@@ -433,8 +433,8 @@ def test_assistant_service_saves_and_releases_context_lease(tmp_path: Path) -> N
             diagnostics={
                 "_router_context": {
                     "agent_contexts": ["/tmp/agent.md"],
-                    "metadata_skills": ["finance-routing"],
-                    "skill_names": ["finance-routing"],
+                    "metadata_skills": ["transfer-routing"],
+                    "skill_names": ["transfer-routing"],
                     "reference_ids": ["ref_001"],
                 }
             },
@@ -457,7 +457,7 @@ def test_assistant_service_saves_and_releases_context_lease(tmp_path: Path) -> N
     task_state = service.assistant.sessions.get_task_state("lease_session")
 
     assert task_state.active_context["task_id"] == "task_transfer"
-    assert task_state.active_context["skill_names"] == ["finance-routing"]
+    assert task_state.active_context["skill_names"] == ["transfer-routing"]
     assert task_state.active_context["reference_ids"] == ["ref_001"]
 
     service.handle_task_completion(
@@ -498,7 +498,7 @@ def test_terminal_message_plan_clears_persisted_current_task_and_context(tmp_pat
                 message="已取消转账任务",
                 diagnostics={
                     "_router_context": {
-                        "skill_names": ["finance-routing"],
+                        "skill_names": ["transfer-routing"],
                         "reference_ids": ["ref_001"],
                     }
                 },
@@ -543,7 +543,7 @@ def test_terminal_current_task_without_task_list_updates_runtime_state(tmp_path:
                 current_task=initial_task,
                 diagnostics={
                     "_router_context": {
-                        "skill_names": ["finance-routing"],
+                        "skill_names": ["transfer-routing"],
                     }
                 },
             )
@@ -610,8 +610,8 @@ def test_task_completion_advances_to_next_waiting_task(tmp_path: Path) -> None:
                 diagnostics={
                     "_router_context": {
                         "agent_contexts": ["/tmp/agent.md"],
-                        "metadata_skills": ["finance-routing"],
-                        "skill_names": ["finance-routing"],
+                        "metadata_skills": ["transfer-routing"],
+                        "skill_names": ["transfer-routing"],
                         "reference_ids": [],
                     }
                 },
@@ -647,6 +647,64 @@ def test_task_completion_advances_to_next_waiting_task(tmp_path: Path) -> None:
     assert saved.active_context["task_id"] == "task_002"
 
 
+def test_ready_task_persists_next_waiting_task_for_followup_input(tmp_path: Path) -> None:
+    first_task = PlannedTask(
+        taskId="task_001",
+        intent_code="AG_TRANS",
+        status="ready_for_dispatch",
+        title="转账给王阳明",
+        slot_memory={"payee_name": "王阳明", "amount": "100"},
+    )
+    second_task = PlannedTask(
+        taskId="task_002",
+        intent_code="AG_TRANS",
+        status="waiting_user_input",
+        title="转账给李正义",
+        slot_memory={"payee_name": "李正义"},
+    )
+    service = IntentRouterHarnessService.from_spec(
+        _write_minimal_harness(tmp_path),
+        message_planner=StaticPlanner(
+            PlannerOutput(
+                mode="multi_task",
+                status="ready_for_dispatch",
+                completion_state=0,
+                completion_reason="router_ready_for_dispatch",
+                intent_code="AG_TRANS",
+                recognition=RecognitionPlan(intent_code="AG_TRANS"),
+                slot_memory={"payee_name": "王阳明", "amount": "100"},
+                task_list=[first_task, second_task],
+                current_task=first_task,
+                diagnostics={
+                    "_router_context": {
+                        "agent_contexts": ["/tmp/agent.md"],
+                        "metadata_skills": ["transfer-routing"],
+                        "skill_names": ["transfer-routing"],
+                        "reference_ids": [],
+                    }
+                },
+            )
+        ),
+    )
+    assert service.assistant is not None
+
+    result = service.handle_message(
+        RouterMessageRequest(
+            custID="C0001",
+            sessionId="ready_followup_session",
+            txt="我要先给王阳明转账，再给李正义转账",
+            executionMode="router_only",
+        )
+    )
+    saved = service.assistant.sessions.get_task_state("ready_followup_session")
+
+    assert result.final_frame.current_task is not None
+    assert result.final_frame.current_task["taskId"] == "task_001"
+    assert saved.current_task is not None
+    assert saved.current_task.taskId == "task_002"
+    assert saved.slot_memory == {"payee_name": "李正义"}
+
+
 def test_cross_skill_followup_task_keeps_its_context_lease(tmp_path: Path) -> None:
     bill_waiting = PlannedTask(
         taskId="task_001",
@@ -668,20 +726,20 @@ def test_cross_skill_followup_task_keeps_its_context_lease(tmp_path: Path) -> No
     )
     all_skill_context = {
         "agent_contexts": ["/tmp/agent.md"],
-        "metadata_skills": ["bill-payment-routing", "finance-routing"],
-        "skill_names": ["bill-payment-routing", "finance-routing"],
+        "metadata_skills": ["bill-payment-routing", "transfer-routing"],
+        "skill_names": ["bill-payment-routing", "transfer-routing"],
         "skill_intent_map": {
             "bill-payment-routing": ["AG_PAY_BILL"],
-            "finance-routing": ["AG_TRANS"],
+            "transfer-routing": ["AG_TRANS"],
         },
         "intent_skill_map": {
             "AG_PAY_BILL": ["bill-payment-routing"],
-            "AG_TRANS": ["finance-routing"],
+            "AG_TRANS": ["transfer-routing"],
         },
     }
     bill_only_context = {
         "agent_contexts": ["/tmp/agent.md"],
-        "metadata_skills": ["bill-payment-routing", "finance-routing"],
+        "metadata_skills": ["bill-payment-routing", "transfer-routing"],
         "skill_names": ["bill-payment-routing"],
         "skill_intent_map": {
             "bill-payment-routing": ["AG_PAY_BILL"],
@@ -730,7 +788,7 @@ def test_cross_skill_followup_task_keeps_its_context_lease(tmp_path: Path) -> No
     transfer_lease = next(
         lease for lease in state_after_seed.context_leases if lease["task_id"] == "task_002"
     )
-    assert transfer_lease["skill_names"] == ["finance-routing"]
+    assert transfer_lease["skill_names"] == ["transfer-routing"]
 
     service.handle_message(
         RouterMessageRequest(custID="C0001", sessionId="cross_skill_session", txt="缴水电费100元")
@@ -739,7 +797,7 @@ def test_cross_skill_followup_task_keeps_its_context_lease(tmp_path: Path) -> No
     transfer_lease = next(
         lease for lease in state_after_bill_slots.context_leases if lease["task_id"] == "task_002"
     )
-    assert transfer_lease["skill_names"] == ["finance-routing"]
+    assert transfer_lease["skill_names"] == ["transfer-routing"]
 
     result = service.handle_task_completion(
         TaskCompletionRequest(
@@ -755,7 +813,7 @@ def test_cross_skill_followup_task_keeps_its_context_lease(tmp_path: Path) -> No
     assert result.final_frame.intent_code == "AG_TRANS"
     assert saved.current_task is not None
     assert saved.current_task.taskId == "task_002"
-    assert saved.active_context["skill_names"] == ["finance-routing"]
+    assert saved.active_context["skill_names"] == ["transfer-routing"]
 
 
 def test_cross_skill_single_message_keeps_transfer_lease_after_bill_completion(
@@ -775,15 +833,15 @@ def test_cross_skill_single_message_keeps_transfer_lease_after_bill_completion(
     )
     router_context = {
         "agent_contexts": ["/tmp/agent.md"],
-        "metadata_skills": ["bill-payment-routing", "finance-routing"],
-        "skill_names": ["bill-payment-routing", "finance-routing"],
+        "metadata_skills": ["bill-payment-routing", "transfer-routing"],
+        "skill_names": ["bill-payment-routing", "transfer-routing"],
         "skill_intent_map": {
             "bill-payment-routing": ["AG_PAY_BILL"],
-            "finance-routing": ["AG_TRANS"],
+            "transfer-routing": ["AG_TRANS"],
         },
         "intent_skill_map": {
             "AG_PAY_BILL": ["bill-payment-routing"],
-            "AG_TRANS": ["finance-routing"],
+            "AG_TRANS": ["transfer-routing"],
         },
     }
     service = IntentRouterHarnessService.from_spec(
@@ -817,7 +875,7 @@ def test_cross_skill_single_message_keeps_transfer_lease_after_bill_completion(
     saved = service.assistant.sessions.get_task_state("single_turn_cross_skill")
 
     assert result.final_frame.task_list[1]["intent_code"] == "AG_TRANS"
-    assert saved.context_leases[1]["skill_names"] == ["finance-routing"]
+    assert saved.context_leases[1]["skill_names"] == ["transfer-routing"]
 
     completion = service.handle_task_completion(
         TaskCompletionRequest(
@@ -833,7 +891,7 @@ def test_cross_skill_single_message_keeps_transfer_lease_after_bill_completion(
     assert completion.final_frame.intent_code == "AG_TRANS"
     assert saved_after_completion.current_task is not None
     assert saved_after_completion.current_task.taskId == "task_002"
-    assert saved_after_completion.active_context["skill_names"] == ["finance-routing"]
+    assert saved_after_completion.active_context["skill_names"] == ["transfer-routing"]
 
 
 def test_current_task_status_is_not_downgraded_to_running(tmp_path: Path) -> None:
@@ -997,7 +1055,7 @@ def test_session_expires_after_idle_timeout_and_clears_memory(tmp_path: Path) ->
                 message="请提供金额",
                 diagnostics={
                     "_router_context": {
-                        "skill_names": ["finance-routing"],
+                        "skill_names": ["transfer-routing"],
                         "reference_ids": ["ref_001"],
                     }
                 },

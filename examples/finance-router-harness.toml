@@ -8,7 +8,7 @@ max_reference_body_chars = 6000
 max_reference_count = 4
 
 [[bindings]]
-skill = "finance-routing"
+skill = "transfer-routing"
 load = "metadata"
 
 [[bindings]]

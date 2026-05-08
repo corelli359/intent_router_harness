@@ -94,7 +94,7 @@ def test_finance_skills_declare_required_slots() -> None:
     harness = load_prompt_harness(Path("examples/finance-router-harness.toml"))
     assert harness is not None
 
-    transfer = harness.skills.get("finance-routing")
+    transfer = harness.skills.get("transfer-routing")
     bill = harness.skills.get("bill-payment-routing")
 
     assert transfer is not None

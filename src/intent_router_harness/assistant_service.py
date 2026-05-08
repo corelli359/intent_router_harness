@@ -668,6 +668,10 @@ def _persisted_current_task(
     task_list: list[PlannedTask],
 ) -> PlannedTask | None:
     if business_current_task is not None and not _is_terminal_task(business_current_task):
+        if business_current_task.status == "ready_for_dispatch":
+            next_waiting_task = _next_waiting_task_after(task_list, business_current_task.taskId)
+            if next_waiting_task is not None:
+                return next_waiting_task
         return business_current_task
     return _first_active_task(task_list)
 
@@ -824,6 +828,20 @@ def _next_active_task_after(
         if seen_current and not _is_terminal_task(task):
             return task
     return _first_active_task(task_list)
+
+
+def _next_waiting_task_after(
+    task_list: list[PlannedTask],
+    task_id: str,
+) -> PlannedTask | None:
+    seen_current = False
+    for task in task_list:
+        if task.taskId == task_id:
+            seen_current = True
+            continue
+        if seen_current and task.status == "waiting_user_input":
+            return task
+    return None
 
 
 def _is_terminal_task(task: PlannedTask) -> bool:

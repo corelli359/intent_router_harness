@@ -579,6 +579,7 @@ class LLMMessagePlanner:
         slot_delta = slot_payload.get("slot_memory", slot_payload.get("slots", {}))
         if not isinstance(slot_delta, dict):
             slot_delta = {}
+        slot_delta = _normalize_slot_delta(slot_delta)
         self._validate_slot_payload_scope(
             request=request,
             task_state=task_state,
@@ -597,8 +598,6 @@ class LLMMessagePlanner:
             else "router_waiting_user_input"
         )
         message = "" if status == "ready_for_dispatch" else _missing_slots_message(skill, missing_slots)
-        if status != "ready_for_dispatch":
-            message = str(slot_payload.get("message") or message)
         updated_current = current_task.model_copy(
             update={"slot_memory": current_slots, "status": status},
             deep=True,
@@ -1246,6 +1245,31 @@ def _required_slots(skill: SkillDocument) -> tuple[str, ...]:
     if "AG_PAY_BILL" in skill.intent_codes:
         return ("payment_item", "amount")
     return ()
+
+
+def _normalize_slot_delta(slot_delta: dict[str, Any]) -> dict[str, Any]:
+    aliases = {
+        "收款人姓名": "payee_name",
+        "收款人": "payee_name",
+        "收款方": "payee_name",
+        "转账金额": "amount",
+        "金额": "amount",
+        "付款卡卡号/尾号": "payer_card",
+        "付款卡": "payer_card",
+        "付款卡备注": "payer_card_alias",
+        "收款卡银行": "payee_bank",
+        "收款银行": "payee_bank",
+        "收款卡卡号/尾号": "payee_card",
+        "收款卡": "payee_card",
+        "收款手机号/尾号": "payee_phone",
+        "收款手机号": "payee_phone",
+        "收款卡备注": "payee_card_alias",
+        "是否手机号转账": "is_phone_transfer",
+    }
+    normalized: dict[str, Any] = {}
+    for key, value in slot_delta.items():
+        normalized[aliases.get(str(key), str(key))] = value
+    return normalized
 
 
 def _slot_has_value(value: Any) -> bool:

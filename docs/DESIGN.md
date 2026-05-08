@@ -17,7 +17,7 @@ The router uses fixed business stages instead of configurable prompt rendering l
 Each dispatchable skill declares one business intent:
 
 ```yaml
-name: finance-routing
+name: transfer-routing
 description: 识别并处理转账/汇款意图 AG_TRANS 的补槽与交接规则。
 intent_codes: ["AG_TRANS"]
 required_slots: ["payee_name", "amount"]
