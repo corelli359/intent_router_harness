@@ -27,6 +27,7 @@ from intent_router_harness.regression import (
     validate_step_transcript,
 )
 from intent_router_harness.runtime import PromptHarness, load_prompt_harness
+from intent_router_harness.workflow import WorkflowToolClient, load_workflow_tool_specs
 
 logger = logging.getLogger(__name__)
 
@@ -91,15 +92,22 @@ class IntentRouterHarnessService:
         regression_suite: RegressionSuite | None = None,
         llm_client: LLMClient | None = None,
         message_planner: MessagePlanner | None = None,
+        workflow_client: WorkflowToolClient | None = None,
     ) -> None:
         self.harness = harness
         self.regression_suite = regression_suite
         self.llm_client = llm_client
+        self.workflow_client = workflow_client
+        workflow_tools = load_workflow_tool_specs(harness.skills)
         planner = message_planner
         if planner is None and llm_client is not None:
             planner = LLMMessagePlanner(harness=harness, llm_client=llm_client)
         self.assistant = (
-            AssistantProtocolService(planner=planner)
+            AssistantProtocolService(
+                planner=planner,
+                workflow_client=workflow_client,
+                workflow_tools=workflow_tools,
+            )
             if planner is not None
             else None
         )
@@ -113,6 +121,7 @@ class IntentRouterHarnessService:
         regression_suite_path: str | Path | None = None,
         llm_client: LLMClient | None = None,
         message_planner: MessagePlanner | None = None,
+        workflow_client: WorkflowToolClient | None = None,
     ) -> "IntentRouterHarnessService":
         """Load a service from a harness spec file."""
         logger.info(
@@ -143,6 +152,7 @@ class IntentRouterHarnessService:
             regression_suite=regression_suite,
             llm_client=llm_client,
             message_planner=message_planner,
+            workflow_client=workflow_client,
         )
         logger.info(
             "initialized harness service name=%s version=%s llm_configured=%s assistant_configured=%s regression_suite_loaded=%s",

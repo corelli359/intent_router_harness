@@ -113,7 +113,7 @@ class PlannerOutput(BaseModel):
     actions: list[dict[str, Any]] = Field(default_factory=list)
     requested_references: list[str] = Field(default_factory=list)
     message: str = ""
-    output: dict[str, Any] = Field(default_factory=dict)
+    output: Any = Field(default_factory=dict)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("slot_memory", "output", "diagnostics", mode="before")
@@ -141,7 +141,7 @@ class AssistantProtocolFrame(BaseModel):
     completion_reason: str
     stage: str | None = None
     details: dict[str, Any] | None = None
-    output: dict[str, Any] = Field(default_factory=dict)
+    output: Any = Field(default_factory=dict)
     slot_memory: dict[str, Any] = Field(default_factory=dict)
     message: str | None = None
     task_list: list[dict[str, Any]] = Field(default_factory=list)

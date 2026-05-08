@@ -23,6 +23,12 @@ from intent_router_harness.regression import load_regression_suite, validate_ste
 from intent_router_harness.server import create_server
 from intent_router_harness.service import IntentRouterHarnessService
 from intent_router_harness.session_store import InMemorySessionStore
+from intent_router_harness.workflow import (
+    WorkflowToolError,
+    WorkflowToolEvent,
+    WorkflowToolResult,
+    WorkflowToolSpec,
+)
 
 
 SUITE_PATH = "regressions/assistant_protocol_v0_6.json"
@@ -71,6 +77,39 @@ class FakeLLMClient:
                 }
             ],
         }
+
+
+class FakeWorkflowClient:
+    def __init__(
+        self,
+        events: list[WorkflowToolEvent] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.events = events or []
+        self.error = error
+        self.calls: list[tuple[WorkflowToolSpec, dict]] = []
+
+    def run_workflow(
+        self,
+        spec: WorkflowToolSpec,
+        *,
+        request_payload: dict,
+    ) -> WorkflowToolResult:
+        self.calls.append((spec, request_payload))
+        if self.error is not None:
+            raise self.error
+        return WorkflowToolResult(events=tuple(self.events))
+
+
+def _transfer_workflow_spec() -> WorkflowToolSpec:
+    return WorkflowToolSpec(
+        intent_code="AG_TRANS",
+        workflow_agent_id="workflow-agent-1-1b14f16b",
+        app_code="chatabc",
+        path="/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",
+        slots_param_name="slots_data",
+        passthrough_config_variables=("custID", "sessionID", "currentDisplay", "agentSessionID"),
+    )
 
 
 def _write_minimal_harness(tmp_path: Path) -> Path:
@@ -990,6 +1029,226 @@ def test_current_task_slot_memory_updates_protocol_and_session(tmp_path: Path) -
     assert saved.slot_memory == {"payee_name": "王阳明", "amount": "100"}
 
 
+def test_execute_ready_task_invokes_workflow_with_passthrough_and_slots(tmp_path: Path) -> None:
+    current_task = PlannedTask(
+        taskId="task_001",
+        intent_code="AG_TRANS",
+        status="ready_for_dispatch",
+        title="转账给陈广荣",
+        slot_memory={"payee_name": "陈广荣", "amount": "500"},
+    )
+    workflow_client = FakeWorkflowClient(
+        [
+            WorkflowToolEvent(
+                node_id="start",
+                node_title="开始",
+                timestamp="2026-05-08 19:18:58.035",
+                node_output={"started": True},
+            ),
+            WorkflowToolEvent(
+                node_id="end",
+                node_title="结束",
+                timestamp="2026-05-08 19:19:04.553",
+                node_output={"output": "opaque", "exception": None},
+            ),
+        ]
+    )
+    service = IntentRouterHarnessService.from_spec(
+        _write_minimal_harness(tmp_path),
+        message_planner=StaticPlanner(
+            PlannerOutput(
+                mode="single_task",
+                status="ready_for_dispatch",
+                completion_state=0,
+                completion_reason="router_ready_for_dispatch",
+                intent_code="AG_TRANS",
+                recognition=RecognitionPlan(intent_code="AG_TRANS"),
+                task_list=[current_task],
+                current_task=current_task,
+            )
+        ),
+        workflow_client=workflow_client,
+    )
+    assert service.assistant is not None
+    service.assistant.workflow_tools = {"AG_TRANS": _transfer_workflow_spec()}
+
+    result = service.handle_message(
+        RouterMessageRequest(
+            custID="1631102265490929",
+            sessionId="1635501196813426",
+            txt="给陈广荣转500元",
+            executionMode="execute",
+            config_variables=[
+                {"name": "sessionID", "value": "1635501196813426"},
+                {"name": "currentDisplay", "value": ""},
+                {"name": "agentSessionID", "value": "1635501196813426"},
+            ],
+        )
+    )
+    saved = service.assistant.sessions.get_task_state("1635501196813426")
+
+    assert len(workflow_client.calls) == 1
+    _, payload = workflow_client.calls[0]
+    assert payload == {
+        "session_id": "1635501196813426",
+        "txt": "给陈广荣转500元",
+        "stream": True,
+        "config_variables": [
+            {"name": "custID", "value": "1631102265490929"},
+            {"name": "sessionID", "value": "1635501196813426"},
+            {"name": "currentDisplay", "value": ""},
+            {"name": "agentSessionID", "value": "1635501196813426"},
+            {"name": "slots_data", "value": '{"payee_name": "陈广荣", "amount": "500"}'},
+        ],
+    }
+    assert [frame.completion_reason for frame in result.frames][-3:] == [
+        "workflow_node_output",
+        "workflow_node_output",
+        "workflow_done",
+    ]
+    assert result.frames[-3].output == {"started": True}
+    assert result.frames[-2].output == {"output": "opaque", "exception": None}
+    assert result.final_frame.status == "completed"
+    assert result.final_frame.output == {"output": "opaque", "exception": None}
+    assert saved.current_task is None
+    assert saved.task_list == []
+    assert saved.slot_memory == {}
+
+
+def test_router_only_ready_task_does_not_invoke_workflow(tmp_path: Path) -> None:
+    current_task = PlannedTask(
+        taskId="task_001",
+        intent_code="AG_TRANS",
+        status="ready_for_dispatch",
+        slot_memory={"payee_name": "陈广荣", "amount": "500"},
+    )
+    workflow_client = FakeWorkflowClient(
+        [WorkflowToolEvent(node_id="end", node_title="结束", timestamp=None, node_output={"done": True})]
+    )
+    service = IntentRouterHarnessService.from_spec(
+        _write_minimal_harness(tmp_path),
+        message_planner=StaticPlanner(
+            PlannerOutput(
+                mode="single_task",
+                status="ready_for_dispatch",
+                completion_state=0,
+                completion_reason="router_ready_for_dispatch",
+                intent_code="AG_TRANS",
+                recognition=RecognitionPlan(intent_code="AG_TRANS"),
+                task_list=[current_task],
+                current_task=current_task,
+            )
+        ),
+        workflow_client=workflow_client,
+    )
+    assert service.assistant is not None
+    service.assistant.workflow_tools = {"AG_TRANS": _transfer_workflow_spec()}
+
+    result = service.handle_message(
+        RouterMessageRequest(
+            custID="C0001",
+            sessionId="router_only_workflow_session",
+            txt="给陈广荣转500元",
+            executionMode="router_only",
+        )
+    )
+
+    assert workflow_client.calls == []
+    assert result.final_frame.status == "ready_for_dispatch"
+    assert result.final_frame.completion_reason == "router_ready_for_dispatch"
+
+
+def test_workflow_node_output_is_opaque_for_string_and_array_values(tmp_path: Path) -> None:
+    current_task = PlannedTask(
+        taskId="task_001",
+        intent_code="AG_TRANS",
+        status="ready_for_dispatch",
+        slot_memory={"payee_name": "陈广荣", "amount": "500"},
+    )
+    workflow_client = FakeWorkflowClient(
+        [
+            WorkflowToolEvent(node_id="string", node_title="字符串", timestamp=None, node_output="opaque-string"),
+            WorkflowToolEvent(node_id="array", node_title="数组", timestamp=None, node_output=["opaque", 1]),
+        ]
+    )
+    service = IntentRouterHarnessService.from_spec(
+        _write_minimal_harness(tmp_path),
+        message_planner=StaticPlanner(
+            PlannerOutput(
+                mode="single_task",
+                status="ready_for_dispatch",
+                completion_state=0,
+                completion_reason="router_ready_for_dispatch",
+                intent_code="AG_TRANS",
+                recognition=RecognitionPlan(intent_code="AG_TRANS"),
+                task_list=[current_task],
+                current_task=current_task,
+            )
+        ),
+        workflow_client=workflow_client,
+    )
+    assert service.assistant is not None
+    service.assistant.workflow_tools = {"AG_TRANS": _transfer_workflow_spec()}
+
+    result = service.handle_message(
+        RouterMessageRequest(
+            custID="C0001",
+            sessionId="opaque_workflow_session",
+            txt="给陈广荣转500元",
+            executionMode="execute",
+        )
+    )
+
+    assert result.frames[-3].output == "opaque-string"
+    assert result.frames[-2].output == ["opaque", 1]
+    assert result.final_frame.output == ["opaque", 1]
+
+
+def test_workflow_error_returns_failed_frame_and_clears_runtime(tmp_path: Path) -> None:
+    current_task = PlannedTask(
+        taskId="task_001",
+        intent_code="AG_TRANS",
+        status="ready_for_dispatch",
+        slot_memory={"payee_name": "陈广荣", "amount": "500"},
+    )
+    service = IntentRouterHarnessService.from_spec(
+        _write_minimal_harness(tmp_path),
+        message_planner=StaticPlanner(
+            PlannerOutput(
+                mode="single_task",
+                status="ready_for_dispatch",
+                completion_state=0,
+                completion_reason="router_ready_for_dispatch",
+                intent_code="AG_TRANS",
+                recognition=RecognitionPlan(intent_code="AG_TRANS"),
+                task_list=[current_task],
+                current_task=current_task,
+            )
+        ),
+        workflow_client=FakeWorkflowClient(error=WorkflowToolError("boom")),
+    )
+    assert service.assistant is not None
+    service.assistant.workflow_tools = {"AG_TRANS": _transfer_workflow_spec()}
+
+    result = service.handle_message(
+        RouterMessageRequest(
+            custID="C0001",
+            sessionId="workflow_error_session",
+            txt="给陈广荣转500元",
+            executionMode="execute",
+        )
+    )
+    saved = service.assistant.sessions.get_task_state("workflow_error_session")
+
+    assert result.final_frame.ok is False
+    assert result.final_frame.status == "failed"
+    assert result.final_frame.completion_reason == "workflow_error"
+    assert result.final_frame.output == {"error": {"code": "workflow_error", "message": "boom"}}
+    assert saved.current_task is None
+    assert saved.task_list == []
+    assert saved.slot_memory == {}
+
+
 def test_session_binds_to_single_user_and_rejects_mismatch(tmp_path: Path) -> None:
     task = PlannedTask(taskId="task_transfer", intent_code="AG_TRANS", status="waiting_user_input")
     service = IntentRouterHarnessService.from_spec(
@@ -1434,5 +1693,5 @@ def test_llm_planner_removes_session_identifiers_from_prompt_context(tmp_path: P
     assert "recommend_session_should_not_reach_llm" not in rendered_prompt
     assert "recommend_agent_should_not_reach_llm" not in rendered_prompt
     assert "display_agent_should_not_reach_llm" not in rendered_prompt
-    assert "validator_page" in rendered_prompt
-    assert "business" in rendered_prompt
+    assert "validator_page" not in rendered_prompt
+    assert "business" not in rendered_prompt

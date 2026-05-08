@@ -17,6 +17,14 @@ from intent_router_harness.contracts import (
 from intent_router_harness.planner import MessagePlanner, PlannerError
 from intent_router_harness.session_store import InMemorySessionStore, SessionNotFoundError
 from intent_router_harness.trace import emit_trace
+from intent_router_harness.workflow import (
+    WorkflowToolClient,
+    WorkflowToolError,
+    WorkflowToolEvent,
+    WorkflowToolSpec,
+    build_workflow_request_payload,
+    workflow_event_output,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +39,13 @@ class AssistantProtocolService:
         *,
         planner: MessagePlanner,
         sessions: InMemorySessionStore | None = None,
+        workflow_client: WorkflowToolClient | None = None,
+        workflow_tools: dict[str, WorkflowToolSpec] | None = None,
     ) -> None:
         self.planner = planner
         self.sessions = sessions or InMemorySessionStore()
+        self.workflow_client = workflow_client
+        self.workflow_tools = dict(workflow_tools or {})
 
     def handle_message(self, request: RouterMessageRequest) -> AssistantServiceResult:
         """Plan one user message and return assistant protocol frames."""
@@ -309,6 +321,11 @@ class AssistantProtocolService:
         )
 
         updated_task_state = _apply_plan(task_state, plan)
+        workflow_frames, updated_task_state = self._maybe_run_workflow(
+            request,
+            updated_task_state,
+        )
+        frames.extend(workflow_frames)
         self.sessions.save_task_state(request.sessionId, updated_task_state)
         logger.info(
             "core.task_state.saved session_id=%s slot_memory=%s current_task=%s task_count=%d active_context=%s",
@@ -322,6 +339,108 @@ class AssistantProtocolService:
             _append_prompt_body_released_trace(request.sessionId, plan, trace_events)
             _append_context_lease_released_trace(request.sessionId, task_state, updated_task_state, trace_events)
         return AssistantServiceResult(frames=frames, trace_events=trace_events)
+
+    def _maybe_run_workflow(
+        self,
+        request: RouterMessageRequest,
+        task_state: TaskRuntimeState,
+    ) -> tuple[list[AssistantProtocolFrame], TaskRuntimeState]:
+        current_task = task_state.current_task
+        if (
+            self.workflow_client is None
+            or current_task is None
+            or request.executionMode != "execute"
+            or current_task.status != "ready_for_dispatch"
+        ):
+            return [], task_state
+        spec = self.workflow_tools.get(current_task.intent_code)
+        if spec is None:
+            return [], task_state
+        logger.info(
+            "workflow.start session_id=%s task_id=%s intent_code=%s workflow_agent_id=%s app_code=%s",
+            request.sessionId,
+            current_task.taskId,
+            current_task.intent_code,
+            spec.workflow_agent_id,
+            spec.app_code,
+        )
+        payload = build_workflow_request_payload(spec, request=request, task=current_task)
+        running_task = current_task.model_copy(update={"status": "waiting_assistant_completion"}, deep=True)
+        running_task_list = [
+            running_task if task.taskId == running_task.taskId else task
+            for task in task_state.task_list
+        ]
+        try:
+            workflow_result = self.workflow_client.run_workflow(
+                spec,
+                request_payload=payload,
+            )
+        except WorkflowToolError as exc:
+            logger.exception(
+                "workflow.failed session_id=%s task_id=%s intent_code=%s error=%s",
+                request.sessionId,
+                current_task.taskId,
+                current_task.intent_code,
+                exc,
+            )
+            failed_task = current_task.model_copy(update={"status": "failed"}, deep=True)
+            failed_frame = AssistantProtocolFrame(
+                ok=False,
+                status="failed",
+                intent_code=current_task.intent_code,
+                completion_state=2,
+                completion_reason="workflow_error",
+                output={"error": {"code": "workflow_error", "message": str(exc)}},
+                slot_memory=current_task.slot_memory,
+                task_list=[
+                    (
+                        failed_task
+                        if task.taskId == failed_task.taskId
+                        else task
+                    ).model_dump(mode="json")
+                    for task in task_state.task_list
+                ],
+                current_task=failed_task.model_dump(mode="json"),
+                graph=task_state.graph,
+            )
+            return [failed_frame], _terminal_task_state(task_state, failed_task)
+
+        frames = [
+            _workflow_node_frame(
+                event,
+                task=running_task,
+                task_list=running_task_list,
+                graph=task_state.graph,
+            )
+            for event in workflow_result.events
+        ]
+        completed_task = current_task.model_copy(update={"status": "completed"}, deep=True)
+        completed_task_list = [
+            completed_task if task.taskId == completed_task.taskId else task
+            for task in task_state.task_list
+        ]
+        frames.append(
+            AssistantProtocolFrame(
+                ok=True,
+                status="completed",
+                intent_code=current_task.intent_code,
+                completion_state=2,
+                completion_reason="workflow_done",
+                output=workflow_result.final_output,
+                slot_memory=current_task.slot_memory,
+                task_list=[task.model_dump(mode="json") for task in completed_task_list],
+                current_task=completed_task.model_dump(mode="json"),
+                graph=task_state.graph,
+            )
+        )
+        logger.info(
+            "workflow.done session_id=%s task_id=%s intent_code=%s event_count=%d",
+            request.sessionId,
+            current_task.taskId,
+            current_task.intent_code,
+            len(workflow_result.events),
+        )
+        return frames, _terminal_task_state(task_state, completed_task)
 
     def handle_task_completion(self, request: TaskCompletionRequest) -> AssistantServiceResult:
         """Apply assistant completion signal to current task state."""
@@ -552,6 +671,51 @@ class AssistantProtocolService:
             )
             emit_trace(trace_events[-1])
         return AssistantServiceResult(frames=frames, trace_events=trace_events)
+
+
+def _workflow_node_frame(
+    event: WorkflowToolEvent,
+    *,
+    task: PlannedTask,
+    task_list: list[PlannedTask],
+    graph: dict[str, Any] | None,
+) -> AssistantProtocolFrame:
+    return AssistantProtocolFrame(
+        ok=True,
+        status="waiting_assistant_completion",
+        intent_code=task.intent_code,
+        completion_state=1,
+        completion_reason="workflow_node_output",
+        output=workflow_event_output(event),
+        slot_memory=task.slot_memory,
+        task_list=[item.model_dump(mode="json") for item in task_list],
+        current_task=task.model_dump(mode="json"),
+        graph=graph,
+    )
+
+
+def _terminal_task_state(
+    task_state: TaskRuntimeState,
+    terminal_task: PlannedTask,
+) -> TaskRuntimeState:
+    task_list = [
+        terminal_task if task.taskId == terminal_task.taskId else task
+        for task in task_state.task_list
+    ]
+    runtime_task_list = _active_task_list(task_list)
+    current_task = _first_active_task(runtime_task_list)
+    context_leases = _retained_context_leases(task_state.context_leases, runtime_task_list)
+    active_context = _lease_for_task(context_leases, current_task)
+    return task_state.model_copy(
+        update={
+            "slot_memory": current_task.slot_memory if current_task is not None else {},
+            "task_list": runtime_task_list,
+            "current_task": current_task,
+            "active_context": active_context,
+            "context_leases": context_leases,
+        },
+        deep=True,
+    )
 
 
 def _recognition_frame(plan: PlannerOutput) -> AssistantProtocolFrame | None:

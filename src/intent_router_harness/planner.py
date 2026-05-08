@@ -17,6 +17,7 @@ from intent_router_harness.llm import LLMClient, LLMRequestError
 from intent_router_harness.runtime import PromptHarness
 from intent_router_harness.skills import SkillDocument
 from intent_router_harness.trace import emit_trace
+from intent_router_harness.workflow import is_workflow_tool_reference_body
 
 logger = logging.getLogger(__name__)
 
@@ -117,11 +118,8 @@ class LLMMessagePlanner:
             "execution_mode": request.executionMode,
             "task_state_json": _llm_context_json(task_state.model_dump(mode="json", exclude_none=True)),
             "recommend_task_json": _llm_context_json(request.recommendTask),
-            "recent_messages_json": _llm_context_json(request.currentDisplay),
-            "config_variables_json": json.dumps(
-                _sanitize_llm_context([item.model_dump(mode="json") for item in request.config_variables]),
-                ensure_ascii=False,
-            ),
+            "recent_messages_json": "[]",
+            "config_variables_json": "[]",
             "planner_output_schema_json": _planner_output_schema_json(),
         }
         trace_events: list[dict[str, Any]] = []
@@ -376,10 +374,15 @@ class LLMMessagePlanner:
         requested_reference_ids: tuple[str, ...],
     ) -> _PlannerPrompt:
         agent_context, agent_trace_events = self._agent_context_events()
-        available_references = {reference.id: reference for reference in skill.references}
-        loaded_references = [
+        prompt_references = [
             reference
             for reference in skill.references
+            if not is_workflow_tool_reference_body(reference.body)
+        ]
+        available_references = {reference.id: reference for reference in prompt_references}
+        loaded_references = [
+            reference
+            for reference in prompt_references
             if reference.id in set(requested_reference_ids)
         ]
         missing = [reference_id for reference_id in requested_reference_ids if reference_id not in available_references]
@@ -389,7 +392,7 @@ class LLMMessagePlanner:
         max_ref_chars = self.harness.spec.max_reference_body_chars
         rendered_skill_body = _truncate(skill.body, max_skill_chars)
         reference_summary = "\n".join(
-            f"- {reference.id}: {reference.purpose}" for reference in skill.references
+            f"- {reference.id}: {reference.purpose}" for reference in prompt_references
         )
         reference_bodies = "\n\n".join(
             f"### {reference.id}\n{_truncate(reference.body, max_ref_chars)}"

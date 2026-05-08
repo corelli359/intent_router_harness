@@ -1,0 +1,20 @@
+{
+  "type": "workflow_tool",
+  "intent_code": "AG_TRANS",
+  "workflow_agent_id": "workflow-agent-1-1b14f16b",
+  "app_code": "chatabc",
+  "path": "/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",
+  "method": "POST",
+  "stream": true,
+  "slots_param_name": "slots_data",
+  "slot_schema": {
+    "payee_name": "string",
+    "amount": "string"
+  },
+  "passthrough_config_variables": [
+    "custID",
+    "sessionID",
+    "currentDisplay",
+    "agentSessionID"
+  ]
+}
