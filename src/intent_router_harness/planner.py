@@ -439,7 +439,7 @@ class LLMMessagePlanner:
             "你负责对当前任务做补槽。只处理 current_task，不要修改、提槽或推进其他任务。",
             "只返回 JSON，字段允许：slot_memory、message、requested_references、diagnostics。",
             "slot_memory 只能包含当前 skill 定义的当前任务槽位；不要输出 task_list，不要输出其他任务的槽位。",
-            "金额保存为不带单位的数字字符串。只合并最新消息或 current_task.source_text 中有依据的新槽位。",
+            "数值类槽位按当前 skill 要求保存。只合并最新消息或 current_task.source_text 中有依据的新槽位。",
             "如果确实需要已暴露 reference 才能完成判断，返回 requested_references。",
             agent_context,
             f"## 当前 Skill 摘要\n- name={skill.name}\n- intent_codes={list(skill.intent_codes)}\n- required_slots={list(skill.required_slots)}\n- description={skill.description}",
@@ -579,7 +579,6 @@ class LLMMessagePlanner:
         slot_delta = slot_payload.get("slot_memory", slot_payload.get("slots", {}))
         if not isinstance(slot_delta, dict):
             slot_delta = {}
-        slot_delta = _normalize_slot_delta(slot_delta)
         self._validate_slot_payload_scope(
             request=request,
             task_state=task_state,
@@ -745,15 +744,13 @@ def _planner_output_schema_json() -> str:
         "rules": [
             "PlannerOutput.status、task_list 每个元素的 status、current_task.status 只能使用 status_values 中的值。",
             "不要输出 pending、queued、todo、incomplete、input_required 等非标准状态。",
-            "不要把 enum、required、fields、rules、description、examples 等 schema 辅助键复制到输出 JSON。",
+            "不要把 enum、required、fields、rules、description 等 schema 辅助键复制到输出 JSON。",
             "如果缺少必填槽位，使用 status=waiting_user_input 和 completion_reason=router_waiting_user_input。",
             "如果 router_only 模式下必填槽位齐全，使用 status=ready_for_dispatch 和 completion_reason=router_ready_for_dispatch。",
             "只能使用已加载 skill 中声明的标准 intent_code，不要编造展示名或泛化标签。",
             "当 task runtime state 中存在等待中的活跃任务时，将短回复优先解释为该任务的槽位值，并保留已有 slot_memory。",
             "补槽时必须整体解析最新消息；如果同一条消息明确提供多个当前任务缺失槽位，应一次性写入所有有依据的槽位。",
-            "当等待中的活跃 AG_TRANS 同时缺少 payee_name 和 amount，且用户同句给出明确收款人实体和明确金额表达时，必须一次性补齐两个槽位。",
-            "当用户先给出收款人实体，后半句用他/她/对方/其/这个人/该收款人等指代词连接转账、打款或汇款动作和金额时，必须同时抽取 payee_name 和 amount。",
-            "planner_output_schema_json 中的 examples 仅说明输出结构和状态选择，不限定可识别文本范围。",
+            "slot_memory 的键必须来自当前已加载 skill 声明的 required_slots 或 skill 正文定义的槽位语义，不要自造业务键。",
             "当 task runtime state 中存在多个等待任务时，第一笔/第一次/第一个、第二笔/第二次/第二个等顺序表达应按 task_list 顺序定位任务并补充对应 slot_memory。",
             "recommendTask 只作为当前轮 router 上下文；只有用户明确选择全部、部分或指定推荐任务时，才基于推荐任务创建 task。",
             "如果用户未采纳推荐任务而表达其他诉求，不要把推荐任务写入 task_list。",
@@ -795,210 +792,6 @@ def _planner_output_schema_json() -> str:
             "message": "面向用户的消息",
             "output": "协议输出对象；不要在 output 内包含 slot_memory",
             "diagnostics": "调试对象",
-        },
-        "examples": {
-            "missing_transfer_slots": {
-                "mode": "slot_filling",
-                "status": "waiting_user_input",
-                "completion_state": 0,
-                "completion_reason": "router_waiting_user_input",
-                "intent_code": "AG_TRANS",
-                "recognition": {
-                    "intent_code": "AG_TRANS",
-                },
-                "slot_memory": {},
-                "task_list": [
-                    {
-                        "taskId": "task_001",
-                        "intent_code": "AG_TRANS",
-                        "status": "waiting_user_input",
-                        "title": "转账",
-                        "slot_memory": {},
-                        "output": {},
-                    }
-                ],
-                "current_task": {
-                    "taskId": "task_001",
-                    "intent_code": "AG_TRANS",
-                    "status": "waiting_user_input",
-                    "title": "转账",
-                    "slot_memory": {},
-                    "output": {},
-                },
-                "message": "请提供收款人和转账金额",
-                "output": {},
-            },
-            "active_transfer_payee_reply": {
-                "mode": "slot_filling",
-                "status": "waiting_user_input",
-                "completion_state": 0,
-                "completion_reason": "router_waiting_user_input",
-                "intent_code": "AG_TRANS",
-                "recognition": {
-                    "intent_code": "AG_TRANS",
-                },
-                "slot_memory": {"payee_name": "小明"},
-                "task_list": [
-                    {
-                        "taskId": "task_001",
-                        "intent_code": "AG_TRANS",
-                        "status": "waiting_user_input",
-                        "title": "转账",
-                        "slot_memory": {"payee_name": "小明"},
-                        "output": {},
-                    }
-                ],
-                "current_task": {
-                    "taskId": "task_001",
-                    "intent_code": "AG_TRANS",
-                    "status": "waiting_user_input",
-                    "title": "转账",
-                    "slot_memory": {"payee_name": "小明"},
-                    "output": {},
-                },
-                "message": "请提供转账金额",
-                "output": {},
-            },
-            "active_transfer_combined_slot_reply": {
-                "mode": "slot_filling",
-                "status": "ready_for_dispatch",
-                "completion_state": 0,
-                "completion_reason": "router_ready_for_dispatch",
-                "intent_code": "AG_TRANS",
-                "recognition": {
-                    "intent_code": "AG_TRANS",
-                },
-                "slot_memory": {"payee_name": "收款人甲", "amount": "1000"},
-                "task_list": [
-                    {
-                        "taskId": "task_001",
-                        "intent_code": "AG_TRANS",
-                        "status": "ready_for_dispatch",
-                        "title": "转账给收款人甲",
-                        "slot_memory": {"payee_name": "收款人甲", "amount": "1000"},
-                        "output": {},
-                    }
-                ],
-                "current_task": {
-                    "taskId": "task_001",
-                    "intent_code": "AG_TRANS",
-                    "status": "ready_for_dispatch",
-                    "title": "转账给收款人甲",
-                    "slot_memory": {"payee_name": "收款人甲", "amount": "1000"},
-                    "output": {},
-                },
-                "message": "",
-                "output": {},
-            },
-            "active_transfer_pronoun_amount_reply": {
-                "mode": "slot_filling",
-                "status": "ready_for_dispatch",
-                "completion_state": 0,
-                "completion_reason": "router_ready_for_dispatch",
-                "intent_code": "AG_TRANS",
-                "recognition": {
-                    "intent_code": "AG_TRANS",
-                },
-                "slot_memory": {"payee_name": "收款人甲", "amount": "1000"},
-                "task_list": [
-                    {
-                        "taskId": "task_001",
-                        "intent_code": "AG_TRANS",
-                        "status": "ready_for_dispatch",
-                        "title": "转账给收款人甲",
-                        "slot_memory": {"payee_name": "收款人甲", "amount": "1000"},
-                        "output": {},
-                    }
-                ],
-                "current_task": {
-                    "taskId": "task_001",
-                    "intent_code": "AG_TRANS",
-                    "status": "ready_for_dispatch",
-                    "title": "转账给收款人甲",
-                    "slot_memory": {"payee_name": "收款人甲", "amount": "1000"},
-                    "output": {},
-                },
-                "message": "",
-                "output": {},
-            },
-            "multi_transfer_missing_amounts": {
-                "mode": "multi_task",
-                "status": "waiting_user_input",
-                "completion_state": 0,
-                "completion_reason": "router_waiting_user_input",
-                "intent_code": "AG_TRANS",
-                "recognition": {
-                    "intent_code": "AG_TRANS",
-                },
-                "slot_memory": {"payee_name": "收款人甲"},
-                "task_list": [
-                    {
-                        "taskId": "task_001",
-                        "intent_code": "AG_TRANS",
-                        "status": "waiting_user_input",
-                        "title": "转账给收款人甲",
-                        "slot_memory": {"payee_name": "收款人甲"},
-                        "output": {},
-                    },
-                    {
-                        "taskId": "task_002",
-                        "intent_code": "AG_TRANS",
-                        "status": "waiting_user_input",
-                        "title": "转账给收款人乙",
-                        "slot_memory": {"payee_name": "收款人乙"},
-                        "output": {},
-                    },
-                ],
-                "current_task": {
-                    "taskId": "task_001",
-                    "intent_code": "AG_TRANS",
-                    "status": "waiting_user_input",
-                    "title": "转账给收款人甲",
-                    "slot_memory": {"payee_name": "收款人甲"},
-                    "output": {},
-                },
-                "message": "请提供第一笔转账金额",
-                "output": {},
-            },
-            "multi_transfer_first_amount_reply": {
-                "mode": "slot_filling",
-                "status": "ready_for_dispatch",
-                "completion_state": 0,
-                "completion_reason": "router_ready_for_dispatch",
-                "intent_code": "AG_TRANS",
-                "recognition": {
-                    "intent_code": "AG_TRANS",
-                },
-                "slot_memory": {"payee_name": "王阳明", "amount": "100"},
-                "task_list": [
-                    {
-                        "taskId": "task_001",
-                        "intent_code": "AG_TRANS",
-                        "status": "ready_for_dispatch",
-                        "title": "转账给王阳明",
-                        "slot_memory": {"payee_name": "王阳明", "amount": "100"},
-                        "output": {},
-                    },
-                    {
-                        "taskId": "task_002",
-                        "intent_code": "AG_TRANS",
-                        "status": "waiting_user_input",
-                        "title": "转账给李正义",
-                        "slot_memory": {"payee_name": "李正义"},
-                        "output": {},
-                    },
-                ],
-                "current_task": {
-                    "taskId": "task_001",
-                    "intent_code": "AG_TRANS",
-                    "status": "ready_for_dispatch",
-                    "title": "转账给王阳明",
-                    "slot_memory": {"payee_name": "王阳明", "amount": "100"},
-                    "output": {},
-                },
-                "message": "",
-                "output": {},
-            },
         },
     }
     return json.dumps(schema, ensure_ascii=False)
@@ -1238,38 +1031,7 @@ def _truncate(value: str, max_chars: int) -> str:
 
 
 def _required_slots(skill: SkillDocument) -> tuple[str, ...]:
-    if skill.required_slots:
-        return skill.required_slots
-    if "AG_TRANS" in skill.intent_codes:
-        return ("payee_name", "amount")
-    if "AG_PAY_BILL" in skill.intent_codes:
-        return ("payment_item", "amount")
-    return ()
-
-
-def _normalize_slot_delta(slot_delta: dict[str, Any]) -> dict[str, Any]:
-    aliases = {
-        "收款人姓名": "payee_name",
-        "收款人": "payee_name",
-        "收款方": "payee_name",
-        "转账金额": "amount",
-        "金额": "amount",
-        "付款卡卡号/尾号": "payer_card",
-        "付款卡": "payer_card",
-        "付款卡备注": "payer_card_alias",
-        "收款卡银行": "payee_bank",
-        "收款银行": "payee_bank",
-        "收款卡卡号/尾号": "payee_card",
-        "收款卡": "payee_card",
-        "收款手机号/尾号": "payee_phone",
-        "收款手机号": "payee_phone",
-        "收款卡备注": "payee_card_alias",
-        "是否手机号转账": "is_phone_transfer",
-    }
-    normalized: dict[str, Any] = {}
-    for key, value in slot_delta.items():
-        normalized[aliases.get(str(key), str(key))] = value
-    return normalized
+    return skill.required_slots
 
 
 def _slot_has_value(value: Any) -> bool:
@@ -1281,21 +1043,8 @@ def _slot_has_value(value: Any) -> bool:
 
 
 def _missing_slots_message(skill: SkillDocument, missing_slots: list[str]) -> str:
-    missing = set(missing_slots)
-    if "AG_TRANS" in skill.intent_codes:
-        if missing == {"payee_name", "amount"}:
-            return "请提供收款人和转账金额"
-        if missing == {"payee_name"}:
-            return "请提供收款人"
-        if missing == {"amount"}:
-            return "请提供转账金额"
-    if "AG_PAY_BILL" in skill.intent_codes:
-        if missing == {"payment_item", "amount"}:
-            return "请提供缴费名目和缴费金额"
-        if missing == {"payment_item"}:
-            return "请提供缴费名目，当前支持水电费和话费"
-        if missing == {"amount"}:
-            return "请提供缴费金额"
+    if missing_slots:
+        return "请补充当前任务所需信息：" + "、".join(missing_slots)
     return "请补充当前任务所需信息"
 
 

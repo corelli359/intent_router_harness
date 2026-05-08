@@ -462,18 +462,13 @@ _VALIDATOR_HTML = """<!doctype html>
                 快速样例
                 <select id="sampleSelect">
                   <option value="">选择后填入输入框</option>
-                  <option value="我要转账">我要转账</option>
-                  <option value="给小明转账200元">给小明转账200元</option>
-                  <option value="我先给王阳明转账，然后再给李正义转账">多任务转账</option>
-                  <option value="第一次给100元">第一次给100元</option>
-                  <option value="第二次给200元">第二次给200元</option>
                 </select>
               </label>
             </div>
             <div class="input-row">
               <label>
                 用户输入
-                <textarea id="messageText" placeholder="输入要发送给 router 的消息，例如：我先给王阳明转账，然后再给李正义转账"></textarea>
+                <textarea id="messageText" placeholder="输入要发送给 router 的消息"></textarea>
               </label>
               <button id="sendBtn" type="button">发送消息</button>
             </div>

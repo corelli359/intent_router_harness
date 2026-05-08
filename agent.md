@@ -7,6 +7,8 @@
 - 每次请求都必须加载本 agent 根指令。
 - 默认上下文必须保持小而清晰；意图识别阶段只使用 skill 的 name、description 和 intent_codes，提槽阶段只加载当前任务对应的业务 skill 正文。
 - 业务 skill 指令是意图边界、槽位语义、任务图使用方式和交接行为的权威依据。
+- 框架代码不得内置任何业务 intent、业务槽位、业务话术、业务样例、业务字段映射或 API 语义。
+- 框架只负责通用任务、规划、状态推进、上下文加载与释放；业务决策必须由 LLM 基于已加载 skill 和 reference 驱动。
 - reference 是 skill 的私有资料；只有已加载 skill 明确暴露，并且 planner 明确请求时，才允许加载。
 - 不允许编造未由已加载 skill 声明的业务 `intent_code`。
 - 不允许用正则兜底、隐藏关键词匹配或模糊规则替代 skill 决策。

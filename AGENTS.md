@@ -18,6 +18,10 @@ After installation, the console script `intent-router-harness` can replace `PYTH
 
 Follow the existing Python style: 4-space indentation, type annotations for public interfaces, `from __future__ import annotations`, Pydantic models for request/response contracts, and small functions with explicit error types. Use `snake_case` for functions, variables, files, and test names; use `PascalCase` for classes and Pydantic models. Keep imports grouped as standard library, third-party, then local package imports. No formatter or linter config is currently checked in, so keep edits consistent with nearby code.
 
+## Framework Boundary Rules
+
+Framework code must stay business-agnostic. Do not hard-code business intent codes, slot names, slot aliases, sample utterances, prompt examples, follow-up wording, API semantics, keyword matching, or regex fallback in `src/intent_router_harness/`. Business behavior belongs in `skills/` and exposed `references/`; the runtime only scans skill metadata, loads the current task's skill content, validates protocol shape, advances task state, and releases context.
+
 ## Testing Guidelines
 
 Use pytest. Place tests in `tests/` with filenames like `test_service.py` and functions like `test_service_renders_prompt_response`. Prefer focused tests that exercise public behavior: prompt rendering, HTTP/ASGI endpoints, assistant protocol parsing, and regression validation. For changes affecting stream behavior, cover both SSE and non-stream responses when practical.
