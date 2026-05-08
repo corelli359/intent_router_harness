@@ -2,8 +2,6 @@
 name: bill-payment-routing
 description: "识别并处理水电费、话费等缴费意图 AG_PAY_BILL 的补槽与交接规则。"
 intent_codes: ["AG_PAY_BILL"]
-domain_codes: ["finance"]
-capabilities: ["routing", "slots", "graph", "planning"]
 required_slots: ["payment_item", "amount"]
 ---
 

@@ -22,8 +22,6 @@ def test_runtime_loads_agent_context_and_skills(tmp_path: Path) -> None:
                 "name: transfer-routing",
                 "description: 转账路由规则",
                 'intent_codes: ["AG_TRANS"]',
-                'domain_codes: ["finance"]',
-                'capabilities: ["routing"]',
                 'required_slots: ["payee_name", "amount"]',
                 'references: [{"id": "ref_001", "path": "references/ref_001.md", "purpose": "Transfer slot detail"}]',
                 "---",

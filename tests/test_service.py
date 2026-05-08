@@ -20,8 +20,6 @@ def _write_demo_harness(tmp_path: Path) -> Path:
                 "name: transfer-routing",
                 "description: 转账路由规则",
                 'intent_codes: ["transfer"]',
-                'domain_codes: ["finance"]',
-                'capabilities: ["routing"]',
                 "---",
                 "# 转账路由规则",
                 "",
@@ -89,8 +87,6 @@ def test_http_server_exposes_only_health_and_business_routes(tmp_path: Path) -> 
                         "message": "transfer 500 to Alice",
                     },
                     "intent_codes": ["transfer"],
-                    "domain_codes": ["finance"],
-                    "capabilities": ["routing"],
                 }
             ),
             headers={"Content-Type": "application/json"},

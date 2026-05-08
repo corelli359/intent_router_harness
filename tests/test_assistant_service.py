@@ -1130,8 +1130,6 @@ def test_llm_planner_rejects_intent_not_declared_by_loaded_skill(tmp_path: Path)
                 "name: transfer-routing",
                 "description: 转账路由规则",
                 'intent_codes: ["AG_TRANS"]',
-                'domain_codes: ["finance"]',
-                'capabilities: ["routing", "slots", "planning"]',
                 "---",
                 "# 转账",
                 "只能输出 AG_TRANS。",
@@ -1202,8 +1200,6 @@ def test_llm_planner_allows_existing_unloaded_task_intent_in_task_list(tmp_path:
                 "name: transfer-routing",
                 "description: 转账路由规则",
                 'intent_codes: ["AG_TRANS"]',
-                'domain_codes: ["finance"]',
-                'capabilities: ["routing", "slots", "planning"]',
                 "---",
                 "# 转账",
             ]
@@ -1220,8 +1216,6 @@ def test_llm_planner_allows_existing_unloaded_task_intent_in_task_list(tmp_path:
                 "name: bill-routing",
                 "description: 缴费路由规则",
                 'intent_codes: ["AG_PAY_BILL"]',
-                'domain_codes: ["finance"]',
-                'capabilities: ["routing", "slots", "planning"]',
                 "---",
                 "# 缴费",
             ]

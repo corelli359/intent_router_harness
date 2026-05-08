@@ -93,15 +93,9 @@ def binding_matches(
     binding: SkillBinding,
     *,
     intent_codes: tuple[str, ...],
-    domain_codes: tuple[str, ...],
-    capabilities: tuple[str, ...],
 ) -> bool:
     """Return whether one binding applies to the current context."""
     if binding.intent_codes and not set(binding.intent_codes).intersection(intent_codes):
-        return False
-    if binding.domain_codes and not set(binding.domain_codes).intersection(domain_codes):
-        return False
-    if binding.capabilities and not set(binding.capabilities).intersection(capabilities):
         return False
     return True
 

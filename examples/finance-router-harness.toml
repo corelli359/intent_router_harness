@@ -9,10 +9,8 @@ max_reference_count = 4
 
 [[bindings]]
 skill = "finance-routing"
-domain_codes = ["finance"]
 load = "metadata"
 
 [[bindings]]
 skill = "bill-payment-routing"
-domain_codes = ["finance"]
 load = "metadata"

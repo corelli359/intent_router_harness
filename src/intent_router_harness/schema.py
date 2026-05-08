@@ -6,12 +6,10 @@ from pydantic import BaseModel, Field
 
 
 class SkillBinding(BaseModel):
-    """Rule that binds one skill to an optional domain or capability context."""
+    """Rule that declares a configured skill."""
 
     skill: str
     intent_codes: list[str] = Field(default_factory=list)
-    domain_codes: list[str] = Field(default_factory=list)
-    capabilities: list[str] = Field(default_factory=list)
     load: Literal["metadata", "body"] = "body"
 
 
@@ -36,8 +34,6 @@ class EvalCase(BaseModel):
     id: str
     variables: dict[str, Any] = Field(default_factory=dict)
     intent_codes: list[str] = Field(default_factory=list)
-    domain_codes: list[str] = Field(default_factory=list)
-    capabilities: list[str] = Field(default_factory=list)
     expected: dict[str, Any] | None = None
     tags: list[str] = Field(default_factory=list)
 
