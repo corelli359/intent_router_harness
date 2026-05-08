@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("regressions/assistant_protocol_v0_6.json"),
     )
     serve_parser.add_argument("--llm-env-file", type=Path, default=Path(".env.local"))
+    serve_parser.add_argument("--workflow-env-file", type=Path, default=Path(".env.local"))
 
     asgi_parser = subparsers.add_parser("serve-asgi", help="Run the ASGI harness service with Uvicorn")
     asgi_parser.add_argument("--host", default="0.0.0.0")
@@ -58,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             skill_roots=args.skill_root,
             regression_suite_path=args.regression_suite,
             llm_env_file=args.llm_env_file,
+            workflow_env_file=args.workflow_env_file,
         )
         return 0
 

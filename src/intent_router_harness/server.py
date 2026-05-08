@@ -20,6 +20,7 @@ from intent_router_harness.service import (
     ServiceConfigurationError,
 )
 from intent_router_harness.session_store import SessionOwnershipError
+from intent_router_harness.workflow import HTTPWorkflowToolClient, load_workflow_settings
 
 
 def create_server(
@@ -44,14 +45,17 @@ def serve(
     skill_roots: list[str] | None = None,
     regression_suite_path: str | Path | None = None,
     llm_env_file: str | Path | None = ".env.local",
+    workflow_env_file: str | Path | None = ".env.local",
 ) -> None:
     """Run the harness HTTP service until interrupted."""
     llm_client = _load_optional_llm_client(llm_env_file)
+    workflow_client = _load_optional_workflow_client(workflow_env_file)
     service = IntentRouterHarnessService.from_spec(
         spec_path,
         skill_roots=skill_roots,
         regression_suite_path=regression_suite_path,
         llm_client=llm_client,
+        workflow_client=workflow_client,
     )
     server = create_server(service, host=host, port=port)
     print(f"intent_router_harness serving {spec_path} on http://{host}:{server.server_port}")
@@ -242,3 +246,12 @@ def _load_optional_llm_client(env_file: str | Path | None) -> OpenAICompatibleLL
     except LLMConfigurationError:
         return None
     return OpenAICompatibleLLMClient(settings)
+
+
+def _load_optional_workflow_client(env_file: str | Path | None) -> HTTPWorkflowToolClient | None:
+    if env_file is None:
+        return None
+    settings = load_workflow_settings(env_file)
+    if settings is None:
+        return None
+    return HTTPWorkflowToolClient(settings)

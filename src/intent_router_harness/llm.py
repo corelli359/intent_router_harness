@@ -25,6 +25,8 @@ class LLMSettings:
     model: str
     temperature: float = 0.0
     timeout_seconds: float = 30.0
+    enable_thinking: bool | None = None
+    thinking_budget: int | None = None
 
 
 class LLMClient(Protocol):
@@ -82,6 +84,8 @@ def load_llm_settings(env_file: str | Path = ".env.local") -> LLMSettings:
         model=model,
         temperature=float(get("ROUTER_LLM_TEMPERATURE") or "0"),
         timeout_seconds=float(get("ROUTER_LLM_TIMEOUT_SECONDS") or "30"),
+        enable_thinking=_optional_bool(get("ROUTER_LLM_ENABLE_THINKING")),
+        thinking_budget=_optional_int(get("ROUTER_LLM_THINKING_BUDGET")),
     )
 
 
@@ -106,6 +110,10 @@ class OpenAICompatibleLLMClient:
         }
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
+        if self.settings.enable_thinking is not None:
+            payload["enable_thinking"] = self.settings.enable_thinking
+        if self.settings.thinking_budget is not None:
+            payload["thinking_budget"] = self.settings.thinking_budget
 
         last_error: Exception | None = None
         for url in _candidate_chat_completion_urls(self.settings.base_url):
@@ -176,6 +184,23 @@ def _candidate_chat_completion_urls(base_url: str) -> list[str]:
     if not stripped.endswith("/v1"):
         candidates.append(f"{stripped}/v1/chat/completions")
     return candidates
+
+
+def _optional_bool(value: str | None) -> bool | None:
+    if value is None or value.strip() == "":
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise LLMConfigurationError(f"invalid boolean value: {value!r}")
+
+
+def _optional_int(value: str | None) -> int | None:
+    if value is None or value.strip() == "":
+        return None
+    return int(value)
 
 
 def _truncate(value: str, limit: int) -> str:

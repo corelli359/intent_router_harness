@@ -3,7 +3,7 @@ name: transfer-routing
 description: 掌银转账意图识别与要素提取技能。用于分析用户对话中的转账意图，并提取转账所需的各个要素。
 intent_codes: ["AG_TRANS"]
 required_slots: ["payee_name", "amount"]
-references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose": "已知收款人列表查询接口说明"}, {"id": "api_call", "path": "references/api_call.md", "purpose": "转账执行接口说明"}]
+references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose": "已知收款人列表查询接口说明"}, {"id": "workflow_tool", "path": "references/workflow_tool.json", "purpose": "转账子工作流调用契约，仅供 Router 执行阶段读取"}]
 ---
 
 # 掌银转账意图识别与要素提取
@@ -12,7 +12,7 @@ references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose":
 
 第一阶段：判定是否为转账意图（支持人民币、非预约转账）  
 第二阶段：提取转账要素（付款卡、收款人、银行、金额等）  
-第三阶段：调用 API 进行转账  
+第三阶段：Router 调用子工作流进行转账
 
 当用户进行转账相关的对话时，必须使用此技能来识别意图和提取关键信息。
 
@@ -22,7 +22,7 @@ references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose":
 
 - **第一阶段**：转账意图与支持范围判定
 - **第二阶段**：转账意图信息抽取
-- **第三阶段**：调用 API 进行转账
+- **第三阶段**：由 Router 在执行模式下调用子工作流进行转账
 
 ---
 
@@ -207,9 +207,14 @@ references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose":
 
 ---
 
-## 第三阶段：转账 API 调用
+## 第三阶段：转账子工作流调用
 
-参考 `./references/api_call.md` 调用转账接口，并将输出结果返回给用户。
+模型只负责识别意图并填写 `payee_name`、`amount` 等槽位；不得在 prompt 中生成或调用工作流 URL、HTTP 请求或透传参数。
+
+当必填槽位齐全时：
+
+- 在 `router_only` 模式下，返回 `ready_for_dispatch`，不调用子工作流。
+- 在 `execute` 模式下，仍返回 `ready_for_dispatch`；Router 会根据 machine-readable workflow reference 调用子工作流，并将子工作流 `node_output` 流式返回。
 
 ---
 
@@ -217,7 +222,7 @@ references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose":
 
 1. 当用户输入需要分析时，首先执行**第一阶段**判断是否为转账意图
 2. 如果第一阶段返回明确的转账意图，则继续执行**第二阶段**提取要素
-3. 如果第二阶段提取成功，则参考 `./references/api_call.md` 调用转账接口
+3. 如果第二阶段提取成功，则交由 Router 在执行阶段调用子工作流
 4. 如果第一阶段返回不支持的结果，直接将该结果返回给用户
 
 ---
@@ -230,7 +235,7 @@ references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose":
  “转给我招行的卡 2000 元”
 
 这是明确的转账意图，执行第二阶段。  
-如果第二阶段成功提取转账要素，则参考 `./references/api_call.md` 调用转账接口。
+如果第二阶段成功提取转账要素，则交由 Router 在执行阶段调用子工作流。
 
 ### 示例2：非农行卡转出
 
@@ -253,7 +258,7 @@ references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose":
 “用我尾号 7890 的工资卡给女儿尾号 4342 的工行卡转 4000”
 
 这是明确的转账意图，执行第二阶段。  
-如果第二阶段成功提取转账要素，则参考 `./references/api_call.md` 调用转账接口。
+如果第二阶段成功提取转账要素，则交由 Router 在执行阶段调用子工作流。
 
 ### 示例5：手机号转账
 
@@ -261,14 +266,14 @@ references: [{"id": "payee_list", "path": "references/payee_list.md", "purpose":
 “给手机尾号 1234 的员工发工资”
 
 这是明确的转账意图，执行第二阶段。  
-如果第二阶段成功提取转账要素，则参考 `./references/api_call.md` 调用转账接口。
+如果第二阶段成功提取转账要素，则交由 Router 在执行阶段调用子工作流。
 
 ---
 
 ## 执行约束（重要）
 
-- **按顺序执行**：必须先完成第一阶段，再执行第二阶段，最后第三阶段
-- **一次性完成**：三个阶段必须在一个对话轮次内全部完成，不要分多次调用
+- **按顺序执行**：必须先完成第一阶段，再执行第二阶段；第三阶段由 Router 执行
+- **一次性完成**：意图识别与提槽必须在一个对话轮次内完成，不要分多次调用
 - **直接返回最终结果**：完成纠错后，直接将最终 JSON 结果返回给用户，不要再调用任何工具
 - **禁止重复调用**：执行完成后立即停止，不要再次调用相同或相似的工具
 - **用户输入信息完整性**：如果没有成功提取到收款人、转账金额信息，则必须提醒用户补全

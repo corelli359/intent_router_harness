@@ -19,6 +19,7 @@ class AppSettings(BaseSettings):
     regression_suite_path: Path | None = Path("regressions/assistant_protocol_v0_6.json")
     llm_env_file: Path | None = Path(".env.local")
     skill_roots: list[str] = Field(default_factory=list)
+    workflow_env_file: Path | None = Path(".env.local")
     expose_prompt_payloads: bool = True
     log_level: str = "INFO"
 
