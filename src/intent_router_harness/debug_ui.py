@@ -16,8 +16,8 @@ _VALIDATOR_HTML = """<!doctype html>
     :root {
       color-scheme: light;
       --bg: #f6f7f9;
-      --surface: #ffffff;
-      --surface-strong: #f0f5ff;
+      --panel-bg: #ffffff;
+      --panel-strong: #f0f5ff;
       --line: #d7dde8;
       --text: #172033;
       --muted: #647084;
@@ -124,7 +124,7 @@ _VALIDATOR_HTML = """<!doctype html>
       justify-content: space-between;
       gap: 16px;
       padding: 14px 18px;
-      background: var(--surface);
+      background: var(--panel-bg);
       border-bottom: 1px solid var(--line);
     }
 
@@ -187,7 +187,7 @@ _VALIDATOR_HTML = """<!doctype html>
     }
 
     .panel {
-      background: var(--surface);
+      background: var(--panel-bg);
       border: 1px solid var(--line);
       border-radius: 8px;
       box-shadow: var(--shadow);

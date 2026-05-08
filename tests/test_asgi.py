@@ -36,14 +36,6 @@ def _write_minimal_harness(tmp_path: Path) -> Path:
             [
                 'name = "asgi-test"',
                 'version = "2026.04"',
-                "",
-                "[surfaces.intent_recognition]",
-                'system = "识别。"',
-                'human = "用户消息：{message}"',
-                "",
-                "[surfaces.task_planning]",
-                'system = "规划。"',
-                'human = "用户消息：{message}"',
             ]
         )
         + "\n",
@@ -68,7 +60,6 @@ def test_asgi_health_ready_and_aux_routes_are_not_exposed(tmp_path: Path) -> Non
             render = await client.post(
                 "/render",
                 json={
-                    "surface": "intent_recognition",
                     "variables": {"message": "hello"},
                 },
             )

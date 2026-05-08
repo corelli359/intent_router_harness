@@ -6,24 +6,13 @@ from pydantic import BaseModel, Field
 
 
 class SkillBinding(BaseModel):
-    """Rule that promotes one skill from metadata-only to full body context."""
+    """Rule that binds one skill to an optional domain or capability context."""
 
     skill: str
-    surfaces: list[str] = Field(default_factory=list)
     intent_codes: list[str] = Field(default_factory=list)
     domain_codes: list[str] = Field(default_factory=list)
     capabilities: list[str] = Field(default_factory=list)
     load: Literal["metadata", "body"] = "body"
-
-
-class SurfaceSpec(BaseModel):
-    """Prompt surface owned by the harness spec."""
-
-    system: str = ""
-    human: str = ""
-    include_skill_index: bool = True
-    inline_skills: list[str] = Field(default_factory=list)
-    max_skill_body_chars: int | None = Field(default=None, gt=0)
 
 
 class HarnessSpec(BaseModel):
@@ -38,24 +27,13 @@ class HarnessSpec(BaseModel):
     max_skill_body_chars: int = Field(default=6000, gt=0)
     max_reference_body_chars: int = Field(default=6000, gt=0)
     max_reference_count: int = Field(default=4, gt=0)
-    surfaces: dict[str, SurfaceSpec] = Field(default_factory=dict)
     bindings: list[SkillBinding] = Field(default_factory=list)
-
-
-class HarnessContext(BaseModel):
-    """Runtime context used to select skills deterministically."""
-
-    surface: str
-    intent_codes: tuple[str, ...] = ()
-    domain_codes: tuple[str, ...] = ()
-    capabilities: tuple[str, ...] = ()
 
 
 class EvalCase(BaseModel):
     """Portable eval case for harness-driven experiments."""
 
     id: str
-    surface: str
     variables: dict[str, Any] = Field(default_factory=dict)
     intent_codes: list[str] = Field(default_factory=list)
     domain_codes: list[str] = Field(default_factory=list)

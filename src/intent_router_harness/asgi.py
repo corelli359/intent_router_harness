@@ -54,8 +54,7 @@ def create_app(
     app.state.settings = resolved_settings
     app.state.service = resolved_service
     logger.info(
-        "ASGI app ready surfaces=%s llm_configured=%s regression_suite_loaded=%s",
-        resolved_service.health().surfaces,
+        "ASGI app ready llm_configured=%s regression_suite_loaded=%s",
         resolved_service.llm_client is not None,
         resolved_service.regression_suite is not None,
     )

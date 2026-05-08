@@ -27,10 +27,10 @@ class SkillDocument:
     description: str
     path: Path
     body: str
-    surfaces: tuple[str, ...] = ()
     intent_codes: tuple[str, ...] = ()
     domain_codes: tuple[str, ...] = ()
     capabilities: tuple[str, ...] = ()
+    required_slots: tuple[str, ...] = ()
     references: tuple[SkillReference, ...] = ()
 
 
@@ -65,13 +65,13 @@ class SkillLibrary:
                 validate_skill_intent_contract(skill)
                 skills[skill.name] = skill
                 logger.info(
-                    "loaded skill name=%s path=%s surfaces=%s intent_codes=%s domain_codes=%s capabilities=%s",
+                    "loaded skill name=%s path=%s intent_codes=%s domain_codes=%s capabilities=%s required_slots=%s",
                     skill.name,
                     skill.path,
-                    list(skill.surfaces),
                     list(skill.intent_codes),
                     list(skill.domain_codes),
                     list(skill.capabilities),
+                    list(skill.required_slots),
                 )
         logger.info("loaded skill library skill_count=%d skills=%s", len(skills), sorted(skills))
         validate_unique_intent_bindings(skills)
@@ -84,7 +84,6 @@ class SkillLibrary:
     def matching_metadata(
         self,
         *,
-        surface: str,
         intent_codes: tuple[str, ...] = (),
         domain_codes: tuple[str, ...] = (),
         capabilities: tuple[str, ...] = (),
@@ -96,7 +95,6 @@ class SkillLibrary:
             if skill.description
             and skill_matches(
                 skill,
-                surface=surface,
                 intent_codes=intent_codes,
                 domain_codes=domain_codes,
                 capabilities=capabilities,
@@ -115,10 +113,10 @@ def load_skill_document(path: Path) -> SkillDocument:
         description=description,
         path=path,
         body=body.strip(),
-        surfaces=tuple(_string_list(metadata.get("surfaces"))),
         intent_codes=tuple(_string_list(metadata.get("intent_codes"))),
         domain_codes=tuple(_string_list(metadata.get("domain_codes"))),
         capabilities=tuple(_string_list(metadata.get("capabilities"))),
+        required_slots=tuple(_string_list(metadata.get("required_slots"))),
         references=tuple(_reference_list(metadata.get("references"), path)),
     )
 
@@ -178,14 +176,11 @@ def parse_simple_frontmatter(lines: list[str]) -> dict[str, Any]:
 def skill_matches(
     skill: SkillDocument,
     *,
-    surface: str,
     intent_codes: tuple[str, ...] = (),
     domain_codes: tuple[str, ...] = (),
     capabilities: tuple[str, ...] = (),
 ) -> bool:
     """Return whether skill metadata applies to the current harness context."""
-    if skill.surfaces and surface not in skill.surfaces:
-        return False
     if intent_codes and skill.intent_codes and not set(skill.intent_codes).intersection(intent_codes):
         return False
     if skill.domain_codes and not set(skill.domain_codes).intersection(domain_codes):

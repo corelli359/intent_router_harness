@@ -683,8 +683,10 @@ def _persisted_slot_memory(
         return {}
     slot_memory = _previous_slot_memory(task_state, current_task)
     if business_current_task is not None and business_current_task.taskId == current_task.taskId:
-        slot_memory.update(plan.slot_memory)
-        slot_memory.update(business_current_task.slot_memory)
+        if business_current_task.slot_memory:
+            slot_memory.update(business_current_task.slot_memory)
+        elif len(plan.task_list) <= 1:
+            slot_memory.update(plan.slot_memory)
         return slot_memory
     slot_memory.update(current_task.slot_memory)
     return slot_memory
@@ -950,10 +952,13 @@ def _effective_slot_memory(
     plan: PlannerOutput,
     current_task: PlannedTask | None,
 ) -> dict[str, Any]:
-    slot_memory = dict(plan.slot_memory)
     if current_task is not None:
-        slot_memory.update(current_task.slot_memory)
-    return slot_memory
+        if current_task.slot_memory:
+            return dict(current_task.slot_memory)
+        if len(plan.task_list) <= 1:
+            return dict(plan.slot_memory)
+        return {}
+    return dict(plan.slot_memory)
 
 
 def _effective_intent_code(plan: PlannerOutput) -> str | None:

@@ -30,4 +30,3 @@ class ReadinessStatus(BaseModel):
     service: str = "intent_router_harness"
     llm_configured: bool
     regression_suite_loaded: bool
-    surfaces: list[str]

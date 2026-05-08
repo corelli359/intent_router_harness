@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import Thread
 
 from intent_router_harness.server import create_server
-from intent_router_harness.service import IntentRouterHarnessService, RenderPromptRequest
+from intent_router_harness.service import IntentRouterHarnessService
 
 
 def _write_demo_harness(tmp_path: Path) -> Path:
@@ -19,7 +19,6 @@ def _write_demo_harness(tmp_path: Path) -> Path:
                 "---",
                 "name: transfer-routing",
                 "description: 转账路由规则",
-                'surfaces: ["intent_recognition"]',
                 'intent_codes: ["transfer"]',
                 'domain_codes: ["finance"]',
                 'capabilities: ["routing"]',
@@ -39,17 +38,6 @@ def _write_demo_harness(tmp_path: Path) -> Path:
                 'name = "finance-router-harness"',
                 'version = "2026.04"',
                 f'skill_roots = ["{skills_root.as_posix()}"]',
-                "",
-                "[surfaces.intent_recognition]",
-                'system = "识别用户消息。"',
-                'human = "用户消息：{message}"',
-                "include_skill_index = true",
-                "",
-                "[[bindings]]",
-                'skill = "transfer-routing"',
-                'surfaces = ["intent_recognition"]',
-                'intent_codes = ["transfer"]',
-                'load = "body"',
             ]
         )
         + "\n",
@@ -58,27 +46,16 @@ def _write_demo_harness(tmp_path: Path) -> Path:
     return spec_path
 
 
-def test_service_renders_prompt_response(tmp_path: Path) -> None:
+def test_service_loads_harness_config(tmp_path: Path) -> None:
     service = IntentRouterHarnessService.from_spec(_write_demo_harness(tmp_path))
 
     health = service.health()
-    response = service.render(
-        RenderPromptRequest(
-            surface="intent_recognition",
-            variables={
-                "message": "transfer 500 to Alice",
-            },
-            intent_codes=["transfer"],
-            domain_codes=["finance"],
-            capabilities=["routing"],
-        )
-    )
+    skill = service.harness.skills.get("transfer-routing")
 
     assert health.name == "finance-router-harness"
-    assert health.surfaces == ["intent_recognition"]
-    assert response.messages[0]["role"] == "system"
-    assert response.loaded_skills == ["transfer-routing"]
-    assert "将收款人" in response.system
+    assert skill is not None
+    assert skill.intent_codes == ("transfer",)
+    assert "将收款人" in skill.body
 
 
 def test_http_server_exposes_only_health_and_business_routes(tmp_path: Path) -> None:
@@ -107,7 +84,6 @@ def test_http_server_exposes_only_health_and_business_routes(tmp_path: Path) -> 
             "/render",
             body=json.dumps(
                 {
-                    "surface": "intent_recognition",
                     "stream": False,
                     "variables": {
                         "message": "transfer 500 to Alice",

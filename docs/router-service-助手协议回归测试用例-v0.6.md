@@ -10,7 +10,6 @@
 
 ```text
 agent.md 根指令
-+ spec surface
 + skill metadata / skill body / reference 渐进式加载
 + LLM planner 结构化输出
 + task-first 运行态
@@ -24,7 +23,7 @@ agent.md 根指令
 3. `POST /api/v1/task/completion` 负责模拟下游任务完成，并验证任务上下文释放。
 4. session 只作为用户绑定和 30 分钟 idle TTL，不参与任务核心状态建模。
 5. 槽位规则来自 skill，不允许通过服务层正则、关键词兜底或 hard code 修补。
-6. debugTrace 用于观察 agent、spec、skill、reference、LLM 分析和上下文释放。
+6. debugTrace 用于观察 agent、skill、reference、LLM 分析和上下文释放。
 
 ## 2. 当前接口基线
 
@@ -206,14 +205,14 @@ input_required
 | TC-M01 | P0 | SSE 意图识别前置帧 | `/api/v1/message` | 识别帧先于业务帧，最后 done | 已覆盖 |
 | TC-M02 | P0 | 非流式返回最终业务帧 | `/api/v1/message` | `stream=false` 只返回最终业务状态 | 已覆盖 |
 | TC-M03 | P0 | 流式与非流式语义一致 | `/api/v1/message` | 最终 `status/slot_memory/output` 一致 | 待结构化 |
-| TC-D01 | P0 | debugTrace 渐进式加载可观测 | `/api/v1/message` | trace 包含请求、session、spec、skill、LLM、业务结果 | 已覆盖核心 |
+| TC-D01 | P0 | debugTrace 渐进式加载可观测 | `/api/v1/message` | trace 包含请求、session、skill、LLM、业务结果 | 已覆盖核心 |
 | TC-D02 | P0 | 非 debug 不输出 trace | `/api/v1/message` | `debugTrace=false` 只有 message/done | 待结构化 |
-| TC-SK01 | P0 | agent.md 默认加载 | prompt render | 每次请求加载根指令 | 已覆盖 |
-| TC-SK02 | P0 | skill metadata 用于场景选择 | prompt render / trace | scene selection 只依赖 metadata，不加载所有 skill body | 已覆盖 |
-| TC-SK03 | P0 | 命中后加载 skill body | `/api/v1/message` | task_planning 加载 `finance-routing` 正文 | 已覆盖 |
-| TC-SK04 | P0 | 无 description 的下层 skill 不进入识别索引 | prompt render | 只能显式加载 | 已覆盖 |
+| TC-SK01 | P0 | agent.md 默认加载 | trace | 每次请求加载根指令 | 已覆盖 |
+| TC-SK02 | P0 | skill metadata 用于意图识别 | trace | 意图识别只依赖 name、description、intent_codes，不加载 skill body | 已覆盖 |
+| TC-SK03 | P0 | 当前任务加载 skill body | `/api/v1/message` | slot filling 加载当前任务对应 `finance-routing` 正文 | 已覆盖 |
+| TC-SK04 | P0 | 无 description 的下层 skill 不进入识别索引 | trace | 不参与意图识别 | 已覆盖 |
 | TC-SK05 | P0 | 一个 skill 不允许多个 intent_code | skill load | 加载失败 | 已覆盖 |
-| TC-SK06 | P1 | reference 只能由已加载 skill 授权加载 | prompt render | 合法 reference 可加载，非法 id 拒绝 | 已覆盖 |
+| TC-SK06 | P1 | reference 只能由已加载 skill 授权加载 | trace | 合法 reference 可加载，非法 id 拒绝 | 已覆盖 |
 | TC-R01 | P0 | 首轮转账缺槽 | `/api/v1/message` | `我要转账` -> `waiting_user_input`，询问收款人和金额 | 已真实验证 |
 | TC-R02 | P0 | 短人名补槽 | `/api/v1/message` | `我要转账` -> `小明`，写入 `payee_name`，继续问金额 | 待结构化 |
 | TC-R03 | P0 | 金额补槽后 ready | `/api/v1/message` | 已有收款人后输入 `200`，进入 `ready_for_dispatch` | 已覆盖 |
@@ -304,9 +303,8 @@ input_required
 | `session_loaded` | 记录 session 生命周期 |
 | `task_runtime_loaded` | 记录 task_count、current_task、slot_memory |
 | `agent_context_loaded` | 记录 `agent.md` 加载 |
-| `spec_progressive_load` | 记录 metadata skill、body skill、reference |
-| `scene_skill_selected` | LLM 选择 `finance-routing` |
-| `skill_body_loaded` | task_planning 加载 `finance-routing/SKILL.md` |
+| `spec_progressive_load` | 记录 metadata skill、当前任务 body skill、reference |
+| `skill_body_loaded` | slot filling 加载 `finance-routing/SKILL.md` |
 | `llm_raw_response` | 展示 LLM 原始结构化 JSON |
 | `llm_analysis` | 展示解析后的 intent/status/slot/task |
 | `slot_and_skill_result` | 展示最终补槽或交接结果 |
@@ -314,22 +312,22 @@ input_required
 
 业务 `message` 帧仍必须满足 TC-M01。
 
-### TC-SK02 skill metadata 用于场景选择
+### TC-SK02 skill metadata 用于意图识别
 
-目标：验证第一层只用 `name + description` 做场景 skill 选择。
+目标：验证第一层只用 `name + description + intent_codes` 做意图识别。
 
 步骤：
 
 1. 在测试 harness 中准备两个 skill：
    - `finance-routing`：有 `description`，声明 `AG_TRANS`。
    - `hidden-helper`：无 `description`，不应出现在识别索引。
-2. 渲染 `scene_selection`。
+2. 调用 `/api/v1/message` 并开启 debugTrace。
 
 期望：
 
-1. `metadata_skills` 只包含有 description 且匹配 surface/domain/capability 的 skill。
+1. `metadata_skills` 只包含有 description 的 skill。
 2. `loaded_skills` 为空。
-3. prompt 中不包含任意 skill body。
+3. 意图识别 prompt 中不包含任意 skill body。
 
 ### TC-SK03 命中后加载 skill body
 
@@ -347,8 +345,8 @@ input_required
 
 期望：
 
-1. scene selection 选择 `finance-routing`。
-2. task_planning 的 `spec_progressive_load` 中：
+1. 意图识别生成 `AG_TRANS` 当前任务。
+2. slot filling 的 `spec_progressive_load` 中：
    - `metadata_skills` 包含 `finance-routing`
    - `loaded_skill_bodies` 包含 `finance-routing`
    - `available_references` 包含 `ref_001`

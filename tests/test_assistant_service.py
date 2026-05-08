@@ -80,10 +80,6 @@ def _write_minimal_harness(tmp_path: Path) -> Path:
             [
                 'name = "assistant-protocol-test"',
                 'version = "2026.04"',
-                "",
-                "[surfaces.task_planning]",
-                'system = "返回 planner JSON。"',
-                'human = "用户消息：{message}"',
             ]
         )
         + "\n",
@@ -1133,7 +1129,6 @@ def test_llm_planner_rejects_intent_not_declared_by_loaded_skill(tmp_path: Path)
                 "---",
                 "name: transfer-routing",
                 "description: 转账路由规则",
-                'surfaces: ["scene_selection", "task_planning"]',
                 'intent_codes: ["AG_TRANS"]',
                 'domain_codes: ["finance"]',
                 'capabilities: ["routing", "slots", "planning"]',
@@ -1152,16 +1147,6 @@ def test_llm_planner_rejects_intent_not_declared_by_loaded_skill(tmp_path: Path)
                 'name = "planner-intent-validation"',
                 'version = "2026.05"',
                 f'skill_roots = ["{skills_root.as_posix()}"]',
-                "",
-                "[surfaces.scene_selection]",
-                'system = "选择 skill。"',
-                'human = "用户消息：{message}"',
-                "include_skill_index = true",
-                "",
-                "[surfaces.task_planning]",
-                'system = "输出 planner JSON。"',
-                'human = "用户消息：{message}\\n任务运行态：{task_state_json}\\nSchema：{planner_output_schema_json}"',
-                "include_skill_index = true",
             ]
         )
         + "\n",
@@ -1216,7 +1201,6 @@ def test_llm_planner_allows_existing_unloaded_task_intent_in_task_list(tmp_path:
                 "---",
                 "name: transfer-routing",
                 "description: 转账路由规则",
-                'surfaces: ["task_planning"]',
                 'intent_codes: ["AG_TRANS"]',
                 'domain_codes: ["finance"]',
                 'capabilities: ["routing", "slots", "planning"]',
@@ -1235,7 +1219,6 @@ def test_llm_planner_allows_existing_unloaded_task_intent_in_task_list(tmp_path:
                 "---",
                 "name: bill-routing",
                 "description: 缴费路由规则",
-                'surfaces: ["task_planning"]',
                 'intent_codes: ["AG_PAY_BILL"]',
                 'domain_codes: ["finance"]',
                 'capabilities: ["routing", "slots", "planning"]',
@@ -1253,11 +1236,6 @@ def test_llm_planner_allows_existing_unloaded_task_intent_in_task_list(tmp_path:
                 'name = "planner-existing-task-validation"',
                 'version = "2026.05"',
                 f'skill_roots = ["{skills_root.as_posix()}"]',
-                "",
-                "[surfaces.task_planning]",
-                'system = "输出 planner JSON。"',
-                'human = "用户消息：{message}\\n任务运行态：{task_state_json}\\nSchema：{planner_output_schema_json}"',
-                "include_skill_index = true",
             ]
         )
         + "\n",
@@ -1341,14 +1319,6 @@ def test_llm_planner_removes_session_identifiers_from_prompt_context(tmp_path: P
             [
                 'name = "planner-private-context"',
                 'version = "2026.05"',
-                "",
-                "[surfaces.task_planning]",
-                'system = "输出 planner JSON。"',
-                (
-                    'human = "用户消息：{message}\\n推荐：{recommend_task_json}\\n'
-                    '展示：{recent_messages_json}\\n配置：{config_variables_json}\\n'
-                    '状态：{task_state_json}\\nSchema：{planner_output_schema_json}"'
-                ),
             ]
         )
         + "\n",

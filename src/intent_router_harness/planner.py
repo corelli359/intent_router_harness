@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -14,6 +15,7 @@ from intent_router_harness.contracts import (
 )
 from intent_router_harness.llm import LLMClient, LLMRequestError
 from intent_router_harness.runtime import PromptHarness
+from intent_router_harness.skills import SkillDocument
 from intent_router_harness.trace import emit_trace
 
 logger = logging.getLogger(__name__)
@@ -59,22 +61,38 @@ class MessagePlanner(Protocol):
         """Return a structured planner output."""
 
 
+@dataclass(frozen=True, slots=True)
+class _PlannerPrompt:
+    """Prompt object used by the assistant runtime."""
+
+    phase: str
+    system: str
+    human: str
+    agent_contexts: tuple[str, ...] = ()
+    metadata_skills: tuple[str, ...] = ()
+    loaded_skills: tuple[str, ...] = ()
+    loaded_references: tuple[str, ...] = ()
+    trace_events: tuple[dict[str, Any], ...] = ()
+
+    def messages(self) -> list[dict[str, str]]:
+        return [
+            {"role": "system", "content": self.system},
+            {"role": "user", "content": self.human},
+        ]
+
+
 class LLMMessagePlanner:
-    """Spec-driven planner that renders a harness surface and calls an LLM."""
+    """Two-stage planner: recognize tasks first, then fill the current task only."""
 
     def __init__(
         self,
         *,
         harness: PromptHarness,
         llm_client: LLMClient,
-        surface: str = "task_planning",
-        scene_surface: str = "scene_selection",
         max_tokens: int = 1200,
     ) -> None:
         self.harness = harness
         self.llm_client = llm_client
-        self.surface = surface
-        self.scene_surface = scene_surface
         self.max_tokens = max_tokens
 
     def plan_message(
@@ -82,7 +100,7 @@ class LLMMessagePlanner:
         request: RouterMessageRequest,
         task_state: TaskRuntimeState,
     ) -> PlannerOutput:
-        """Render task-planning prompt and validate the LLM JSON output."""
+        """Recognize task queue, then fill slots for the current task only."""
         include_trace = request.debugTrace
         logger.info(
             "llm.plan.start session_id=%s execution_mode=%s text=%s task_slot_memory=%s current_task=%s",
@@ -93,7 +111,6 @@ class LLMMessagePlanner:
             task_state.current_task.model_dump(mode="json") if task_state.current_task else None,
         )
         active_context = task_state.active_context if isinstance(task_state.active_context, dict) else {}
-        loaded_skill_names = tuple(_string_list(active_context.get("skill_names")))
         requested_reference_ids = tuple(_string_list(active_context.get("reference_ids")))
         variables = {
             "message": request.txt,
@@ -108,17 +125,48 @@ class LLMMessagePlanner:
             "planner_output_schema_json": _planner_output_schema_json(),
         }
         trace_events: list[dict[str, Any]] = []
-        if not loaded_skill_names:
-            loaded_skill_names = self._select_scene_skills(
+
+        if _has_active_task(task_state):
+            task_list = list(task_state.task_list)
+            current_task = task_state.current_task or _first_active_task(task_list)
+        else:
+            intent_prompt = self._render_intent_prompt(request=request, variables=variables)
+            _record_prompt_trace(
                 request=request,
-                variables=variables,
+                prompt=intent_prompt,
+                include_trace=include_trace,
+                trace_events=trace_events,
+                title="意图识别提示词加载",
+            )
+            raw_response, content = self._call_llm(request, intent_prompt)
+            _record_raw_response_trace(
+                request=request,
+                raw_response=raw_response,
+                content=content,
                 include_trace=include_trace,
                 trace_events=trace_events,
             )
-        prompt = self._render_prompt(
+            task_list = self._parse_intent_tasks(request, content)
+            current_task = _first_active_task(task_list)
+
+        if current_task is None:
+            plan = PlannerOutput(
+                mode="failed",
+                status="failed",
+                completion_state=2,
+                completion_reason="router_intent_not_recognized",
+                message="未识别出可处理的业务意图",
+                output={},
+            )
+            return plan
+
+        skill = self._skill_for_intent(request, current_task.intent_code)
+        prompt = self._render_slot_prompt(
             request=request,
             variables=variables,
-            loaded_skill_names=loaded_skill_names,
+            task_list=task_list,
+            current_task=current_task,
+            skill=skill,
             requested_reference_ids=requested_reference_ids,
         )
         _record_prompt_trace(
@@ -126,7 +174,7 @@ class LLMMessagePlanner:
             prompt=prompt,
             include_trace=include_trace,
             trace_events=trace_events,
-            title="最终提示词加载",
+            title="当前任务提槽提示词加载",
         )
         raw_response, content = self._call_llm(request, prompt)
         _record_raw_response_trace(
@@ -136,8 +184,16 @@ class LLMMessagePlanner:
             include_trace=include_trace,
             trace_events=trace_events,
         )
-        payload, plan = _parse_plan_payload(request, content)
-        _validate_plan_intents(request, plan, task_state, prompt, self.harness)
+        slot_payload = self._parse_slot_payload(request, content)
+        plan = self._build_plan_from_slot_payload(
+            request=request,
+            task_state=task_state,
+            task_list=task_list,
+            current_task=current_task,
+            skill=skill,
+            slot_payload=slot_payload,
+        )
+        payload = plan.model_dump(mode="json")
 
         if plan.requested_references:
             requested_reference_ids = tuple(
@@ -160,10 +216,12 @@ class LLMMessagePlanner:
                 )
                 trace_events.append(event.model_dump(mode="json"))
                 emit_trace(event)
-            prompt = self._render_prompt(
+            prompt = self._render_slot_prompt(
                 request=request,
                 variables=variables,
-                loaded_skill_names=tuple(prompt.loaded_skills),
+                task_list=task_list,
+                current_task=current_task,
+                skill=skill,
                 requested_reference_ids=requested_reference_ids,
             )
             _record_prompt_trace(
@@ -181,8 +239,16 @@ class LLMMessagePlanner:
                 include_trace=include_trace,
                 trace_events=trace_events,
             )
-            payload, plan = _parse_plan_payload(request, content)
-            _validate_plan_intents(request, plan, task_state, prompt, self.harness)
+            slot_payload = self._parse_slot_payload(request, content)
+            plan = self._build_plan_from_slot_payload(
+                request=request,
+                task_state=task_state,
+                task_list=task_list,
+                current_task=current_task,
+                skill=skill,
+                slot_payload=slot_payload,
+            )
+            payload = plan.model_dump(mode="json")
 
         logger.info(
             "llm.plan.validated session_id=%s mode=%s status=%s intent_code=%s completion_reason=%s slot_memory=%s task_count=%d output=%s",
@@ -214,7 +280,7 @@ class LLMMessagePlanner:
             "metadata_skills": list(prompt.metadata_skills),
             "skill_names": list(prompt.loaded_skills),
             "reference_ids": list(prompt.loaded_references),
-            **_skill_context_maps(prompt, self.harness),
+            **self._all_skill_context_maps(prompt),
         }
         if include_trace:
             event = AssistantTraceEvent(
@@ -246,95 +312,413 @@ class LLMMessagePlanner:
         plan = plan.model_copy(update={"diagnostics": diagnostics}, deep=True)
         return plan
 
-    def _select_scene_skills(
+    def _render_intent_prompt(
         self,
         *,
         request: RouterMessageRequest,
         variables: dict[str, Any],
-        include_trace: bool,
-        trace_events: list[dict[str, Any]],
-    ) -> tuple[str, ...]:
-        if self.scene_surface not in self.harness.spec.surfaces:
-            return ()
+    ) -> _PlannerPrompt:
+        metadata_skills = self._metadata_skills()
+        skill_lines = [
+            f"- name={skill.name}; intent_codes={list(skill.intent_codes)}; description={skill.description}"
+            for skill in metadata_skills
+        ]
+        agent_context, agent_trace_events = self._agent_context_events()
+        system = "\n\n".join(
+            part
+            for part in [
+                "\n".join(
+                    [
+                        "你负责做意图识别和多意图拆分。",
+                        "只允许依据可用 Skill 摘要中的 name、description 和 intent_codes 做判断。",
+                        "不要加载、复述或依赖任何 Skill 正文。",
+                        "不要做提槽，不要输出 slot_memory，不要判断 ready/waiting。",
+                        "一个 task 只能承载一个 intent_code；一个用户请求包含多个独立业务动作时，按用户表达顺序拆成多个 task。",
+                        "每个 task 必须包含 taskId、intent_code、title、source_text。source_text 是该任务对应的原始用户片段。",
+                        "只返回 JSON：{\"tasks\":[...],\"reason\":\"...\"}。",
+                    ]
+                ),
+                agent_context,
+                "## 可用 Skill 摘要\n" + "\n".join(skill_lines),
+            ]
+            if part.strip()
+        )
+        human = "\n\n".join(
+            [
+                f"用户消息：\n{variables['message']}",
+                f"执行模式：\n{variables['execution_mode']}",
+                f"任务运行态 JSON：\n{variables['task_state_json']}",
+                f"推荐任务 JSON：\n{variables['recommend_task_json']}",
+                f"最近展示上下文 JSON：\n{variables['recent_messages_json']}",
+                f"配置变量 JSON：\n{variables['config_variables_json']}",
+            ]
+        )
+        return _PlannerPrompt(
+            phase="intent_recognition",
+            system=system,
+            human=human,
+            agent_contexts=tuple(str(context.path) for context in self.harness.agent_contexts),
+            metadata_skills=tuple(skill.name for skill in metadata_skills),
+            trace_events=tuple(agent_trace_events),
+        )
 
-        try:
-            prompt = self.harness.render(
-                surface=self.scene_surface,
-                variables=variables,
-                domain_codes=("finance",),
-                capabilities=("routing", "slots", "planning"),
+    def _render_slot_prompt(
+        self,
+        *,
+        request: RouterMessageRequest,
+        variables: dict[str, Any],
+        task_list: list[Any],
+        current_task: Any,
+        skill: SkillDocument,
+        requested_reference_ids: tuple[str, ...],
+    ) -> _PlannerPrompt:
+        agent_context, agent_trace_events = self._agent_context_events()
+        available_references = {reference.id: reference for reference in skill.references}
+        loaded_references = [
+            reference
+            for reference in skill.references
+            if reference.id in set(requested_reference_ids)
+        ]
+        missing = [reference_id for reference_id in requested_reference_ids if reference_id not in available_references]
+        if missing:
+            raise PlannerError(f"requested references are not exposed by current skill: {missing}")
+        max_skill_chars = self.harness.spec.max_skill_body_chars
+        max_ref_chars = self.harness.spec.max_reference_body_chars
+        rendered_skill_body = _truncate(skill.body, max_skill_chars)
+        reference_summary = "\n".join(
+            f"- {reference.id}: {reference.purpose}" for reference in skill.references
+        )
+        reference_bodies = "\n\n".join(
+            f"### {reference.id}\n{_truncate(reference.body, max_ref_chars)}"
+            for reference in loaded_references
+        )
+        trace_events = [
+            *agent_trace_events,
+            {
+                "stage": "spec_progressive_load",
+                "title": "Skill渐进式加载",
+                "summary": f"当前任务加载 skill={skill.name}",
+                "data": {
+                    "metadata_skills": [item.name for item in self._metadata_skills()],
+                    "loaded_skill_bodies": [skill.name],
+                    "available_references": sorted(available_references),
+                    "loaded_references": [reference.id for reference in loaded_references],
+                },
+            },
+            {
+                "stage": "skill_body_loaded",
+                "title": "Skill正文加载",
+                "summary": f"{skill.name} 已加载到当前任务提槽 prompt",
+                "data": {
+                    "skill": skill.name,
+                    "description": skill.description,
+                    "path": str(skill.path),
+                    "body_chars": len(skill.body),
+                    "truncated_to": max_skill_chars,
+                    "body": rendered_skill_body,
+                },
+            },
+        ]
+        for reference in loaded_references:
+            trace_events.append(
+                {
+                    "stage": "reference_body_loaded",
+                    "title": "Reference正文加载",
+                    "summary": f"{reference.id} 已加载到当前任务提槽 prompt",
+                    "data": {
+                        "reference_id": reference.id,
+                        "skill": skill.name,
+                        "path": str(reference.path),
+                        "body_chars": len(reference.body),
+                        "truncated_to": max_ref_chars,
+                        "body": _truncate(reference.body, max_ref_chars),
+                    },
+                }
             )
-        except (KeyError, ValueError) as exc:
-            raise PlannerError(f"scene selection surface failed: {self.scene_surface}: {exc}") from exc
+        system_parts = [
+            "你负责对当前任务做补槽。只处理 current_task，不要修改、提槽或推进其他任务。",
+            "只返回 JSON，字段允许：slot_memory、message、requested_references、diagnostics。",
+            "slot_memory 只能包含当前 skill 定义的当前任务槽位；不要输出 task_list，不要输出其他任务的槽位。",
+            "金额保存为不带单位的数字字符串。只合并最新消息或 current_task.source_text 中有依据的新槽位。",
+            "如果确实需要已暴露 reference 才能完成判断，返回 requested_references。",
+            agent_context,
+            f"## 当前 Skill 摘要\n- name={skill.name}\n- intent_codes={list(skill.intent_codes)}\n- required_slots={list(skill.required_slots)}\n- description={skill.description}",
+            f"## 当前 Skill 正文\n{rendered_skill_body}",
+        ]
+        if reference_summary:
+            system_parts.append("## 可用 Reference 摘要\n" + reference_summary)
+        if reference_bodies:
+            system_parts.append("## 已加载 Reference 正文\n" + reference_bodies)
+        human = "\n\n".join(
+            [
+                f"用户最新消息：\n{variables['message']}",
+                f"当前任务 JSON：\n{_llm_context_json(_task_json(current_task))}",
+                f"完整任务队列 JSON（只读，禁止修改非当前任务）：\n{_llm_context_json([_task_json(task) for task in task_list])}",
+                f"当前任务已知槽位 JSON：\n{_llm_context_json(getattr(current_task, 'slot_memory', {}))}",
+                f"任务运行态 JSON：\n{variables['task_state_json']}",
+            ]
+        )
+        return _PlannerPrompt(
+            phase="slot_filling",
+            system="\n\n".join(part for part in system_parts if part.strip()),
+            human=human,
+            agent_contexts=tuple(str(context.path) for context in self.harness.agent_contexts),
+            metadata_skills=tuple(skill.name for skill in self._metadata_skills()),
+            loaded_skills=(skill.name,),
+            loaded_references=tuple(reference.id for reference in loaded_references),
+            trace_events=tuple(trace_events),
+        )
 
-        _record_prompt_trace(
-            request=request,
-            prompt=prompt,
-            include_trace=include_trace,
-            trace_events=trace_events,
-            title="场景Skill选择提示词加载",
-        )
-        raw_response, content = self._call_llm(request, prompt)
-        _record_raw_response_trace(
-            request=request,
-            raw_response=raw_response,
-            content=content,
-            include_trace=include_trace,
-            trace_events=trace_events,
-        )
+    def _metadata_skills(self) -> list[SkillDocument]:
+        return [
+            skill
+            for name in self.harness.skills.names()
+            if (skill := self.harness.skills.get(name)) is not None and skill.description
+        ]
+
+    def _agent_context_events(self) -> tuple[str, list[dict[str, Any]]]:
+        if not self.harness.agent_contexts:
+            return "", []
+        lines = ["## Agent 根指令"]
+        event_data: list[dict[str, Any]] = []
+        for context in self.harness.agent_contexts:
+            lines.extend([f"### {context.path.name}", context.body])
+            event_data.append(
+                {"path": str(context.path), "body_chars": len(context.body), "body": context.body}
+            )
+        return "\n".join(lines), [
+            {
+                "stage": "agent_context_loaded",
+                "title": "Agent根指令加载",
+                "summary": f"加载 {len(self.harness.agent_contexts)} 个 agent context",
+                "data": {"agent_contexts": event_data},
+            }
+        ]
+
+    def _parse_intent_tasks(self, request: RouterMessageRequest, content: str) -> list[Any]:
         try:
             payload = json.loads(content)
         except json.JSONDecodeError as exc:
-            raise PlannerError(f"scene selection output is not JSON: {exc}") from exc
-
-        selected = _merge_strings(tuple(_string_list(payload.get("skill_names"))))
-        allowed = set(prompt.metadata_skills)
-        invalid = [name for name in selected if name not in allowed]
-        if invalid:
-            raise PlannerError(
-                f"scene selection returned unknown skills: {invalid}; allowed={sorted(allowed)}"
+            raise PlannerError(f"intent recognition output is not JSON: {exc}") from exc
+        raw_tasks = payload.get("tasks", payload.get("task_list", []))
+        if not raw_tasks and payload.get("skill_names"):
+            raw_tasks = []
+            for skill_name in _string_list(payload.get("skill_names")):
+                skill = self.harness.skills.get(skill_name)
+                if skill is None or not skill.intent_codes:
+                    continue
+                raw_tasks.append(
+                    {
+                        "intent_code": skill.intent_codes[0],
+                        "title": skill.description or skill.name,
+                        "source_text": request.txt,
+                    }
+                )
+        if not isinstance(raw_tasks, list):
+            raise PlannerError("intent recognition output tasks must be a list")
+        allowed_intents = self._declared_intents()
+        tasks = []
+        for index, item in enumerate(raw_tasks, start=1):
+            if not isinstance(item, dict):
+                continue
+            intent_code = str(item.get("intent_code") or "").strip()
+            if intent_code not in allowed_intents:
+                raise PlannerError(
+                    f"intent recognition emitted undeclared intent_code: {intent_code!r}"
+                )
+            task_id = str(item.get("taskId") or f"task_{index:03d}").strip()
+            title = str(item.get("title") or allowed_intents[intent_code].description).strip()
+            source_text = str(item.get("source_text") or request.txt).strip()
+            tasks.append(
+                {
+                    "taskId": task_id,
+                    "intent_code": intent_code,
+                    "status": "waiting_user_input",
+                    "title": title,
+                    "slot_memory": {},
+                    "output": {},
+                    "source_text": source_text,
+                }
             )
+        try:
+            return [PlannerOutput.model_validate(
+                {
+                    "mode": "single_task",
+                    "status": "waiting_user_input",
+                    "completion_reason": "router_waiting_user_input",
+                    "task_list": tasks,
+                }
+            ).task_list[index] for index in range(len(tasks))]
+        except ValidationError as exc:
+            raise PlannerError(f"intent recognition tasks failed schema validation: {exc}") from exc
+
+    def _parse_slot_payload(self, request: RouterMessageRequest, content: str) -> dict[str, Any]:
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise PlannerError(f"slot filling output is not JSON: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise PlannerError("slot filling output must be a JSON object")
         logger.info(
-            "llm.scene_selection.result session_id=%s selected_skills=%s available_skills=%s reason=%s",
+            "llm.slot.parsed_json session_id=%s payload=%s",
             request.sessionId,
-            selected,
-            list(prompt.metadata_skills),
-            _truncate_for_log(str(payload.get("reason") or ""), 500),
+            _truncate_for_log(json.dumps(payload, ensure_ascii=False), 4000),
         )
-        if include_trace:
-            event = AssistantTraceEvent(
-                stage="scene_skill_selected",
-                title="业务场景Skill选择",
-                summary=f"selected_skills={selected}",
-                data={
-                    "selected_skills": selected,
-                    "available_skills": list(prompt.metadata_skills),
-                    "reason": payload.get("reason"),
-                },
-            )
-            trace_events.append(event.model_dump(mode="json"))
-            emit_trace(event)
-        return tuple(selected)
+        return payload
 
-    def _render_prompt(
+    def _build_plan_from_slot_payload(
         self,
         *,
         request: RouterMessageRequest,
-        variables: dict[str, Any],
-        loaded_skill_names: tuple[str, ...],
-        requested_reference_ids: tuple[str, ...],
-    ):
-        try:
-            return self.harness.render(
-                surface=self.surface,
-                variables=variables,
-                domain_codes=("finance",),
-                capabilities=("routing", "slots", "planning"),
-                loaded_skill_names=loaded_skill_names,
-                requested_reference_ids=requested_reference_ids,
+        task_state: TaskRuntimeState,
+        task_list: list[Any],
+        current_task: Any,
+        skill: SkillDocument,
+        slot_payload: dict[str, Any],
+    ) -> PlannerOutput:
+        slot_delta = slot_payload.get("slot_memory", slot_payload.get("slots", {}))
+        if not isinstance(slot_delta, dict):
+            slot_delta = {}
+        self._validate_slot_payload_scope(
+            request=request,
+            task_state=task_state,
+            current_task=current_task,
+            skill=skill,
+            slot_payload=slot_payload,
+        )
+        current_slots = dict(getattr(current_task, "slot_memory", {}) or {})
+        current_slots.update(slot_delta)
+        required_slots = _required_slots(skill)
+        missing_slots = [slot for slot in required_slots if not _slot_has_value(current_slots.get(slot))]
+        status = "ready_for_dispatch" if not missing_slots else "waiting_user_input"
+        completion_reason = (
+            "router_ready_for_dispatch"
+            if status == "ready_for_dispatch"
+            else "router_waiting_user_input"
+        )
+        message = "" if status == "ready_for_dispatch" else _missing_slots_message(skill, missing_slots)
+        if status != "ready_for_dispatch":
+            message = str(slot_payload.get("message") or message)
+        updated_current = current_task.model_copy(
+            update={"slot_memory": current_slots, "status": status},
+            deep=True,
+        )
+        updated_tasks = [
+            updated_current if task.taskId == updated_current.taskId else task
+            for task in task_list
+        ]
+        mode = "multi_task" if len(updated_tasks) > 1 else "slot_filling"
+        requested_references = _string_list(slot_payload.get("requested_references"))
+        return PlannerOutput(
+            mode=mode,
+            status=status,
+            completion_state=0,
+            completion_reason=completion_reason,
+            intent_code=updated_current.intent_code,
+            recognition={"intent_code": updated_current.intent_code},
+            slot_memory=current_slots,
+            task_list=updated_tasks,
+            current_task=updated_current,
+            requested_references=requested_references,
+            message=message,
+            output={},
+            diagnostics={
+                "slot_payload": slot_payload,
+                "missing_slots": missing_slots,
+            },
+        )
+
+    def _validate_slot_payload_scope(
+        self,
+        *,
+        request: RouterMessageRequest,
+        task_state: TaskRuntimeState,
+        current_task: Any,
+        skill: SkillDocument,
+        slot_payload: dict[str, Any],
+    ) -> None:
+        allowed_intents = set(skill.intent_codes)
+        existing_task_intents = _existing_task_intents(task_state)
+        emitted: list[tuple[str, str, str | None]] = []
+        if slot_payload.get("intent_code"):
+            emitted.append(("intent_code", str(slot_payload["intent_code"]), None))
+        recognition = slot_payload.get("recognition")
+        if isinstance(recognition, dict) and recognition.get("intent_code"):
+            emitted.append(("recognition.intent_code", str(recognition["intent_code"]), None))
+        for index, item in enumerate(slot_payload.get("task_list") or []):
+            if isinstance(item, dict) and item.get("intent_code"):
+                emitted.append(
+                    (
+                        f"task_list[{index}].intent_code",
+                        str(item["intent_code"]),
+                        str(item.get("taskId") or ""),
+                    )
+                )
+        raw_current = slot_payload.get("current_task")
+        if isinstance(raw_current, dict) and raw_current.get("intent_code"):
+            emitted.append(
+                (
+                    "current_task.intent_code",
+                    str(raw_current["intent_code"]),
+                    str(raw_current.get("taskId") or ""),
+                )
             )
-        except (KeyError, ValueError) as exc:
-            raise PlannerError(f"planning surface is not configured or reference loading failed: {self.surface}: {exc}") from exc
+        invalid = [
+            {"field": field, "intent_code": intent_code}
+            for field, intent_code, task_id in emitted
+            if intent_code not in allowed_intents
+            and (not task_id or existing_task_intents.get(task_id) != intent_code)
+        ]
+        if invalid:
+            raise PlannerError(
+                "LLM planner emitted intent_code not declared by loaded skills: "
+                f"session_id={request.sessionId} invalid={invalid} allowed={sorted(allowed_intents)}"
+            )
+        raw_current_task = slot_payload.get("current_task")
+        if isinstance(raw_current_task, dict):
+            task_id = str(raw_current_task.get("taskId") or "")
+            if task_id and task_id != current_task.taskId:
+                raise PlannerError(
+                    "LLM slot filler attempted to modify a non-current task: "
+                    f"session_id={request.sessionId} task_id={task_id} current_task={current_task.taskId}"
+                )
+
+    def _skill_for_intent(self, request: RouterMessageRequest, intent_code: str) -> SkillDocument:
+        matches = [
+            skill
+            for skill in self._metadata_skills()
+            if intent_code in skill.intent_codes
+        ]
+        if not matches:
+            raise PlannerError(
+                f"no skill declares intent_code={intent_code!r}: session_id={request.sessionId}"
+            )
+        return matches[0]
+
+    def _declared_intents(self) -> dict[str, SkillDocument]:
+        result: dict[str, SkillDocument] = {}
+        for skill in self._metadata_skills():
+            for intent_code in skill.intent_codes:
+                result[intent_code] = skill
+        return result
+
+    def _all_skill_context_maps(self, prompt: Any) -> dict[str, dict[str, list[str]]]:
+        skill_intent_map: dict[str, list[str]] = {}
+        intent_skill_map: dict[str, list[str]] = {}
+        reference_skill_map: dict[str, list[str]] = {}
+        loaded_references = set(getattr(prompt, "loaded_references", ()))
+        for skill in self._metadata_skills():
+            skill_intent_map[skill.name] = list(skill.intent_codes)
+            for intent_code in skill.intent_codes:
+                intent_skill_map.setdefault(intent_code, []).append(skill.name)
+            for reference in skill.references:
+                if reference.id in loaded_references:
+                    reference_skill_map.setdefault(reference.id, []).append(skill.name)
+        return {
+            "skill_intent_map": skill_intent_map,
+            "intent_skill_map": intent_skill_map,
+            "reference_skill_map": reference_skill_map,
+        }
 
     def _call_llm(self, request: RouterMessageRequest, prompt):
         logger.debug(
@@ -630,9 +1014,9 @@ def _record_prompt_trace(
     title: str,
 ) -> None:
     logger.info(
-        "llm.plan.prompt_rendered session_id=%s surface=%s agent_contexts=%s metadata_skills=%s loaded_skills=%s loaded_references=%s system_chars=%d human_chars=%d",
+        "llm.plan.prompt_rendered session_id=%s phase=%s agent_contexts=%s metadata_skills=%s loaded_skills=%s loaded_references=%s system_chars=%d human_chars=%d",
         request.sessionId,
-        prompt.surface,
+        prompt.phase,
         list(prompt.agent_contexts),
         list(prompt.metadata_skills),
         list(prompt.loaded_skills),
@@ -641,9 +1025,9 @@ def _record_prompt_trace(
         len(prompt.human),
     )
     logger.info(
-        "core.trace step=prompt_loaded session_id=%s surface=%s system_contains=surface_rules+agent_context+spec_context+loaded_skill_bodies+loaded_references human_contains=user_message+task_runtime_state+output_schema loaded_skills=%s loaded_references=%s system_chars=%d human_chars=%d",
+        "core.trace step=prompt_loaded session_id=%s phase=%s system_contains=stage_rules+agent_context+skill_context human_contains=user_message+task_runtime_state loaded_skills=%s loaded_references=%s system_chars=%d human_chars=%d",
         request.sessionId,
-        prompt.surface,
+        prompt.phase,
         list(prompt.loaded_skills),
         list(prompt.loaded_references),
         len(prompt.system),
@@ -660,11 +1044,10 @@ def _record_prompt_trace(
         stage="prompt_loaded",
         title=title,
         summary=(
-            "system prompt 包含 surface 规则、agent 根指令、spec 上下文、"
-            "已加载 skill 和已加载 reference；human prompt 包含用户消息、任务运行态和输出 schema"
+            "system prompt 包含阶段规则、agent 根指令、skill 上下文；human prompt 包含用户消息和任务运行态"
         ),
         data={
-            "surface": prompt.surface,
+            "phase": prompt.phase,
             "agent_contexts": list(prompt.agent_contexts),
             "metadata_skills": list(prompt.metadata_skills),
             "loaded_skills": list(prompt.loaded_skills),
@@ -822,6 +1205,74 @@ def _effective_intent_code(plan: PlannerOutput) -> str | None:
     if plan.recognition is not None:
         return plan.recognition.intent_code
     return None
+
+
+def _has_active_task(task_state: TaskRuntimeState) -> bool:
+    if task_state.current_task is not None and task_state.current_task.status not in {
+        "completed",
+        "cancelled",
+        "failed",
+    }:
+        return True
+    return any(task.status not in {"completed", "cancelled", "failed"} for task in task_state.task_list)
+
+
+def _first_active_task(task_list: list[Any]) -> Any | None:
+    for task in task_list:
+        if getattr(task, "status", None) not in {"completed", "cancelled", "failed"}:
+            return task
+    return None
+
+
+def _task_json(task: Any) -> dict[str, Any]:
+    if hasattr(task, "model_dump"):
+        return task.model_dump(mode="json")
+    if isinstance(task, dict):
+        return dict(task)
+    return {}
+
+
+def _truncate(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[:max_chars] + "\n...[truncated]"
+
+
+def _required_slots(skill: SkillDocument) -> tuple[str, ...]:
+    if skill.required_slots:
+        return skill.required_slots
+    if "AG_TRANS" in skill.intent_codes:
+        return ("payee_name", "amount")
+    if "AG_PAY_BILL" in skill.intent_codes:
+        return ("payment_item", "amount")
+    return ()
+
+
+def _slot_has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return True
+
+
+def _missing_slots_message(skill: SkillDocument, missing_slots: list[str]) -> str:
+    missing = set(missing_slots)
+    if "AG_TRANS" in skill.intent_codes:
+        if missing == {"payee_name", "amount"}:
+            return "请提供收款人和转账金额"
+        if missing == {"payee_name"}:
+            return "请提供收款人"
+        if missing == {"amount"}:
+            return "请提供转账金额"
+    if "AG_PAY_BILL" in skill.intent_codes:
+        if missing == {"payment_item", "amount"}:
+            return "请提供缴费名目和缴费金额"
+        if missing == {"payment_item"}:
+            return "请提供缴费名目，当前支持水电费和话费"
+        if missing == {"amount"}:
+            return "请提供缴费金额"
+    return "请补充当前任务所需信息"
 
 
 def _task_for_log(task: object | None) -> str:

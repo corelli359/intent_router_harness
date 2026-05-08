@@ -26,7 +26,7 @@ from intent_router_harness.regression import (
     validate_case_transcripts,
     validate_step_transcript,
 )
-from intent_router_harness.runtime import PromptHarness, RenderedPrompt, load_prompt_harness
+from intent_router_harness.runtime import PromptHarness, load_prompt_harness
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +41,6 @@ class HarnessHealth(BaseModel):
     name: str
     version: str
     enabled: bool
-    surfaces: list[str]
-
-
-class SurfaceSummary(BaseModel):
-    """Public summary of one configured prompt surface."""
-
-    name: str
-    include_skill_index: bool
-    inline_skills: list[str] = Field(default_factory=list)
-    max_skill_body_chars: int | None = None
 
 
 class RegressionCaseSummary(BaseModel):
@@ -71,53 +61,6 @@ class RegressionSuiteSummary(BaseModel):
     primary_mode: str
     event_filter: list[str]
     cases: list[RegressionCaseSummary]
-
-
-class RenderPromptRequest(BaseModel):
-    """Service request for rendering one prompt surface."""
-
-    surface: str
-    stream: bool = False
-    variables: dict[str, Any] = Field(default_factory=dict)
-    intent_codes: list[str] = Field(default_factory=list)
-    domain_codes: list[str] = Field(default_factory=list)
-    capabilities: list[str] = Field(default_factory=list)
-    loaded_skill_names: list[str] = Field(default_factory=list)
-    requested_reference_ids: list[str] = Field(default_factory=list)
-
-
-class RenderPromptResponse(BaseModel):
-    """Service response containing the rendered prompt and skill decisions."""
-
-    surface: str
-    system: str
-    human: str
-    messages: list[dict[str, str]]
-    agent_contexts: list[str]
-    metadata_skills: list[str]
-    loaded_skills: list[str]
-    loaded_references: list[str]
-
-
-class RenderLLMRequest(RenderPromptRequest):
-    """Service request for rendering one prompt and invoking the configured LLM."""
-
-    max_tokens: int | None = Field(default=None, gt=0)
-    parse_json: bool = True
-
-
-class RenderLLMResponse(BaseModel):
-    """Rendered prompt plus the configured LLM response."""
-
-    surface: str
-    model: str
-    content: str
-    json_valid: bool
-    parsed_json: Any | None = None
-    json_error: str | None = None
-    finish_reason: str | None = None
-    usage: dict[str, Any] | None = None
-    prompt: RenderPromptResponse
 
 
 class RegressionValidationRequest(BaseModel):
@@ -194,7 +137,7 @@ class IntentRouterHarnessService:
                 regression_suite.version,
                 regression_suite.source_document,
                 len(regression_suite.cases),
-            )
+        )
         service = cls(
             harness,
             regression_suite=regression_suite,
@@ -202,10 +145,9 @@ class IntentRouterHarnessService:
             message_planner=message_planner,
         )
         logger.info(
-            "initialized harness service name=%s version=%s surfaces=%s llm_configured=%s assistant_configured=%s regression_suite_loaded=%s",
+            "initialized harness service name=%s version=%s llm_configured=%s assistant_configured=%s regression_suite_loaded=%s",
             service.harness.spec.name,
             service.harness.spec.version,
-            sorted(service.harness.spec.surfaces),
             service.llm_client is not None,
             service.assistant is not None,
             service.regression_suite is not None,
@@ -218,20 +160,7 @@ class IntentRouterHarnessService:
             name=self.harness.spec.name,
             version=self.harness.spec.version,
             enabled=self.harness.spec.enabled,
-            surfaces=sorted(self.harness.spec.surfaces),
         )
-
-    def surfaces(self) -> list[SurfaceSummary]:
-        """Return configured prompt surfaces without exposing prompt bodies."""
-        return [
-            SurfaceSummary(
-                name=name,
-                include_skill_index=surface.include_skill_index,
-                inline_skills=list(surface.inline_skills),
-                max_skill_body_chars=surface.max_skill_body_chars,
-            )
-            for name, surface in sorted(self.harness.spec.surfaces.items())
-        ]
 
     def regression_summary(self) -> RegressionSuiteSummary:
         """Return a summary of the loaded regression suite."""
@@ -293,50 +222,6 @@ class IntentRouterHarnessService:
                 errors=[str(exc)],
             )
 
-    def render(self, request: RenderPromptRequest) -> RenderPromptResponse:
-        """Render one prompt request through the underlying harness."""
-        prompt = self.harness.render(
-            surface=request.surface,
-            variables=request.variables,
-            intent_codes=tuple(request.intent_codes),
-            domain_codes=tuple(request.domain_codes),
-            capabilities=tuple(request.capabilities),
-            loaded_skill_names=tuple(request.loaded_skill_names),
-            requested_reference_ids=tuple(request.requested_reference_ids),
-        )
-        return _rendered_prompt_response(prompt)
-
-    def render_llm(self, request: RenderLLMRequest) -> RenderLLMResponse:
-        """Render one prompt and invoke the configured LLM."""
-        if self.llm_client is None:
-            raise ServiceConfigurationError("LLM client is not configured")
-
-        prompt_response = self.render(request)
-        raw_response = self.llm_client.chat(
-            prompt_response.messages,
-            max_tokens=request.max_tokens,
-        )
-        content, finish_reason = _chat_message_content(raw_response)
-        parsed_json: Any | None = None
-        json_error: str | None = None
-        if request.parse_json:
-            try:
-                parsed_json = json.loads(content)
-            except json.JSONDecodeError as exc:
-                json_error = str(exc)
-
-        return RenderLLMResponse(
-            surface=prompt_response.surface,
-            model=str(getattr(self.llm_client.settings, "model", "")),
-            content=content,
-            json_valid=(json_error is None if request.parse_json else False),
-            parsed_json=parsed_json,
-            json_error=json_error,
-            finish_reason=finish_reason,
-            usage=raw_response.get("usage") if isinstance(raw_response.get("usage"), dict) else None,
-            prompt=prompt_response,
-        )
-
     def handle_message(self, request: RouterMessageRequest) -> AssistantServiceResult:
         """Handle an assistant protocol message request."""
         if self.assistant is None:
@@ -353,19 +238,6 @@ class IntentRouterHarnessService:
         if self.regression_suite is None:
             raise ServiceConfigurationError("regression suite is not loaded")
         return self.regression_suite
-
-
-def _rendered_prompt_response(prompt: RenderedPrompt) -> RenderPromptResponse:
-    return RenderPromptResponse(
-        surface=prompt.surface,
-        system=prompt.system,
-        human=prompt.human,
-        messages=prompt.messages(),
-        agent_contexts=list(prompt.agent_contexts),
-        metadata_skills=list(prompt.metadata_skills),
-        loaded_skills=list(prompt.loaded_skills),
-        loaded_references=list(prompt.loaded_references),
-    )
 
 
 def _step_by_name(case: RegressionCase, step_name: str):

@@ -1,66 +1,32 @@
 # intent_router_harness
 
-`intent_router_harness` is a standalone project for building intent-routing
-capabilities with a DeepAgents-style harness pattern.
+`intent_router_harness` is a standalone assistant-protocol router for intent
+recognition, serial business task queues, skill-constrained slot filling, and
+task completion callbacks.
 
 It does not import, patch, or configure any production router project. The
-project owns its own specs, skills, prompt surfaces, and tests.
+project owns its own specs, skills, regression data, tests, and local service.
 
 ## Core Model
 
-- A spec file defines named prompt surfaces.
-- `agent.md` is the default root instruction layer.
-- Skill metadata is indexed first.
-- Full business `SKILL.md` bodies are loaded only after scene selection or an
-  explicit runtime request.
-- Lower-level helper skills without `description` stay out of the recognition
-  index and can still be loaded explicitly.
-- Long or low-frequency rules should be exposed as skill-owned references.
-- Rendered prompts are plain data, so they can be used by any LLM client or
-  eval runner.
-
-## Example
-
-```python
-from intent_router_harness import load_prompt_harness
-
-harness = load_prompt_harness("examples/finance-router-harness.toml")
-prompt = harness.render(
-    surface="scene_selection",
-    variables={
-        "message": "transfer 500 to Alice",
-        "recommend_task_json": "[]",
-        "task_state_json": "{}",
-        "recent_messages_json": "[]",
-        "config_variables_json": "[]",
-    },
-    domain_codes=("finance",),
-    capabilities=("routing", "slots", "planning"),
-)
-
-print(prompt.messages())
-```
+- `agent.md` is loaded as the root instruction layer.
+- The first LLM call performs intent recognition and multi-intent splitting
+  using only skill `name`, `description`, and `intent_codes`.
+- The service owns `task_list` ordering and chooses one `current_task`.
+- The second LLM call loads only the current task's `SKILL.md` body and fills
+  only that task's slots.
+- Skill frontmatter declares one `intent_code` and its `required_slots`.
+- The service computes `waiting_user_input` or `ready_for_dispatch` from
+  `required_slots`; LLM output is not the source of truth for task readiness.
+- Skill and reference bodies are not stored in session state.
 
 ## Layout
 
-- `src/intent_router_harness`: harness runtime and skill loading code.
-- `examples`: sample harness specs.
-- `regressions`: structured regression suites extracted from docs.
-- `skills`: sample DeepAgents-style skills.
-- `tests`: standalone tests.
-
-## Design Notes
-
-See [docs/DESIGN.md](docs/DESIGN.md) for the current architecture, DeepAgents
-harness references, implementation model, and next steps.
-
-See [docs/router-service-助手协议回归测试用例-v0.6.md](docs/router-service-助手协议回归测试用例-v0.6.md)
-for the current project-aligned regression case plan.
-
-See [docs/ASSISTANT_PROTOCOL_REGRESSION.md](docs/ASSISTANT_PROTOCOL_REGRESSION.md)
-for the structured regression suite implementation.
-
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for ASGI deployment instructions.
+- `src/intent_router_harness`: router runtime, service, session, LLM, and skill loading code.
+- `examples`: sample service specs.
+- `regressions`: structured regression suites.
+- `skills`: sample business skills and references.
+- `tests`: pytest coverage for service behavior and protocol rules.
 
 ## Commands
 
@@ -77,44 +43,18 @@ After installing the package, the same commands are available through
 
 ## HTTP Service
 
-The service layer exposes the assistant protocol over HTTP:
-
 - `GET /healthz`: liveness check.
 - `GET /readyz`: readiness check and LLM configuration visibility.
-- `GET /` or `/validator`: browser validation UI for streaming message and task completion flows.
-- `POST /api/v1/message`: spec-driven assistant protocol message entrypoint.
-- `POST /api/v1/task/completion`: assistant task completion callback.
-
-SSE request:
+- `GET /` or `/validator`: browser validation UI.
+- `POST /api/v1/message`: assistant protocol message entrypoint.
+- `POST /api/v1/task/completion`: task completion callback.
 
 ```bash
 curl -s http://127.0.0.1:8765/api/v1/message \
   -H 'Content-Type: application/json' \
   -d '{
     "sessionId": "assistant_demo_001",
-    "txt": "给小明转账200元",
-    "stream": true,
-    "executionMode": "router_only"
-  }'
-```
-
-The SSE response uses `event: message` for business frames and ends
-with:
-
-```text
-event: done
-data: [DONE]
-```
-
-For non-streaming JSON, send `"stream": false` or omit the field.
-
-Assistant protocol service request:
-
-```bash
-curl -s http://127.0.0.1:8765/api/v1/message \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "sessionId": "assistant_demo_001",
+    "custID": "C0001",
     "txt": "给小明转账200元",
     "stream": true,
     "executionMode": "router_only"

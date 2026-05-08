@@ -1,10 +1,10 @@
 ---
 name: finance-routing
 description: "识别并处理转账/汇款意图 AG_TRANS 的补槽与交接规则。"
-surfaces: ["scene_selection", "intent_recognition", "slot_extraction", "graph_planning", "task_planning"]
 intent_codes: ["AG_TRANS"]
 domain_codes: ["finance"]
 capabilities: ["routing", "slots", "graph", "planning"]
+required_slots: ["payee_name", "amount"]
 references: [{"id": "ref_001", "path": "references/ref_001.md", "purpose": "AG_TRANS 槽位与 router_only 交接细则"}]
 ---
 

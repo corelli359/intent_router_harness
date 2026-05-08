@@ -404,10 +404,9 @@ def _compact_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
         compact["data"] = _pick(
             data,
             [
-                "surface",
+                "phase",
                 "metadata_skills",
                 "loaded_skill_bodies",
-                "inline_skills",
                 "max_skill_body_chars",
             ],
         )
@@ -415,7 +414,7 @@ def _compact_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
         body = str(data.get("body") or "")
         compact["data"] = _drop_empty(
             {
-                "surface": data.get("surface"),
+                "phase": data.get("phase"),
                 "skill": data.get("skill"),
                 "path": data.get("path"),
                 "body_chars": data.get("body_chars"),
@@ -425,7 +424,7 @@ def _compact_trace_payload(payload: dict[str, Any]) -> dict[str, Any]:
     elif stage == "prompt_loaded":
         compact["data"] = _drop_empty(
             {
-                "surface": data.get("surface"),
+                "phase": data.get("phase"),
                 "loaded_skills": data.get("loaded_skills"),
                 "system_chars": data.get("system_chars"),
                 "human_chars": data.get("human_chars"),

@@ -1,6 +1,5 @@
 from intent_router_harness.runtime import (
     PromptHarness,
-    RenderedPrompt,
     binding_matches,
     load_harness_spec,
     load_prompt_harness,
@@ -8,10 +7,8 @@ from intent_router_harness.runtime import (
 from intent_router_harness.schema import (
     EvalCase,
     ExperimentSpec,
-    HarnessContext,
     HarnessSpec,
     SkillBinding,
-    SurfaceSpec,
     Variant,
 )
 from intent_router_harness.contracts import (
@@ -33,12 +30,7 @@ from intent_router_harness.service import (
     RegressionSuiteSummary,
     RegressionValidationRequest,
     RegressionValidationResponse,
-    RenderLLMRequest,
-    RenderLLMResponse,
-    RenderPromptRequest,
-    RenderPromptResponse,
     ServiceConfigurationError,
-    SurfaceSummary,
 )
 from intent_router_harness.skills import SkillDocument, SkillLibrary, load_skill_document
 from intent_router_harness.regression import (
@@ -54,7 +46,6 @@ from intent_router_harness.regression import (
 __all__ = [
     "EvalCase",
     "ExperimentSpec",
-    "HarnessContext",
     "HarnessHealth",
     "HarnessSpec",
     "IntentRouterHarnessService",
@@ -73,19 +64,12 @@ __all__ = [
     "RegressionValidationRequest",
     "RegressionValidationResponse",
     "RecognitionPlan",
-    "RenderLLMRequest",
-    "RenderLLMResponse",
-    "RenderPromptRequest",
-    "RenderPromptResponse",
-    "RenderedPrompt",
     "ServiceConfigurationError",
     "RouterMessageRequest",
     "SessionState",
     "SkillBinding",
     "SkillDocument",
     "SkillLibrary",
-    "SurfaceSpec",
-    "SurfaceSummary",
     "Variant",
     "TaskCompletionRequest",
     "TaskRuntimeState",
