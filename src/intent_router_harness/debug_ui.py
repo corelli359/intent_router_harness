@@ -423,7 +423,7 @@ _VALIDATOR_HTML = """<!doctype html>
     <header class="topbar">
       <div class="brand">
         <strong>Intent Router 验证台</strong>
-        <span>同源调用 /api/v1/message 和 /api/v1/task/completion，按 SSE 增量展示。</span>
+        <span>同源调用消息与任务完成接口，按 SSE 增量展示。</span>
       </div>
       <div class="status-line">
         <span id="statusDot" class="dot ready"></span>
@@ -544,6 +544,7 @@ _VALIDATOR_HTML = """<!doctype html>
       contextEvents: [],
       busy: false,
     };
+    const apiBasePath = deriveApiBasePath();
 
     const els = {
       statusDot: document.getElementById("statusDot"),
@@ -692,7 +693,7 @@ _VALIDATOR_HTML = """<!doctype html>
       const payload = buildMessagePayload(text);
       appendBubble("user", "user", text, payload);
       els.messageText.value = "";
-      await postSse("/api/v1/message", payload);
+      await postSse(apiPath("/api/v1/message"), payload);
     }
 
     async function completeTask() {
@@ -702,7 +703,22 @@ _VALIDATOR_HTML = """<!doctype html>
         return;
       }
       appendBubble("user", "task completion", "模拟下游完成：" + payload.taskId, payload);
-      await postSse("/api/v1/task/completion", payload);
+      await postSse(apiPath("/api/v1/task/completion"), payload);
+    }
+
+    function deriveApiBasePath() {
+      const path = window.location.pathname || "/";
+      if (path === "/" || path === "/validator") {
+        return "";
+      }
+      if (path.endsWith("/validator")) {
+        return path.slice(0, -"/validator".length);
+      }
+      return path.replace(/\\/$/, "");
+    }
+
+    function apiPath(path) {
+      return apiBasePath + path;
     }
 
     async function postSse(path, payload) {

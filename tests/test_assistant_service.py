@@ -40,6 +40,19 @@ class StaticPlanner:
         return self.output
 
 
+class SequencePlanner:
+    def __init__(self, outputs: list[PlannerOutput]) -> None:
+        self.outputs = list(outputs)
+
+    def plan_message(
+        self,
+        request: RouterMessageRequest,
+        task_state: TaskRuntimeState,
+    ) -> PlannerOutput:
+        del request, task_state
+        return self.outputs.pop(0)
+
+
 class FakeLLMClient:
     def __init__(self, responses: list[str]) -> None:
         self.responses = list(responses)
@@ -636,6 +649,195 @@ def test_task_completion_advances_to_next_waiting_task(tmp_path: Path) -> None:
     assert saved.slot_memory == {"payee_name": "李正义"}
     assert [task.taskId for task in saved.task_list] == ["task_002"]
     assert saved.active_context["task_id"] == "task_002"
+
+
+def test_cross_skill_followup_task_keeps_its_context_lease(tmp_path: Path) -> None:
+    bill_waiting = PlannedTask(
+        taskId="task_001",
+        intent_code="AG_PAY_BILL",
+        status="waiting_user_input",
+        title="缴费",
+    )
+    bill_ready = bill_waiting.model_copy(
+        update={
+            "status": "ready_for_dispatch",
+            "slot_memory": {"payment_item": "水电费", "amount": "100"},
+        }
+    )
+    transfer_waiting = PlannedTask(
+        taskId="task_002",
+        intent_code="AG_TRANS",
+        status="waiting_user_input",
+        title="转账",
+    )
+    all_skill_context = {
+        "agent_contexts": ["/tmp/agent.md"],
+        "metadata_skills": ["bill-payment-routing", "finance-routing"],
+        "skill_names": ["bill-payment-routing", "finance-routing"],
+        "skill_intent_map": {
+            "bill-payment-routing": ["AG_PAY_BILL"],
+            "finance-routing": ["AG_TRANS"],
+        },
+        "intent_skill_map": {
+            "AG_PAY_BILL": ["bill-payment-routing"],
+            "AG_TRANS": ["finance-routing"],
+        },
+    }
+    bill_only_context = {
+        "agent_contexts": ["/tmp/agent.md"],
+        "metadata_skills": ["bill-payment-routing", "finance-routing"],
+        "skill_names": ["bill-payment-routing"],
+        "skill_intent_map": {
+            "bill-payment-routing": ["AG_PAY_BILL"],
+        },
+        "intent_skill_map": {
+            "AG_PAY_BILL": ["bill-payment-routing"],
+        },
+    }
+    service = IntentRouterHarnessService.from_spec(
+        _write_minimal_harness(tmp_path),
+        message_planner=SequencePlanner(
+            [
+                PlannerOutput(
+                    mode="multi_task",
+                    status="waiting_user_input",
+                    completion_state=0,
+                    completion_reason="router_waiting_user_input",
+                    intent_code="AG_PAY_BILL",
+                    recognition=RecognitionPlan(intent_code="AG_PAY_BILL"),
+                    task_list=[bill_waiting, transfer_waiting],
+                    current_task=bill_waiting,
+                    message="请提供缴费名目和缴费金额",
+                    diagnostics={"_router_context": all_skill_context},
+                ),
+                PlannerOutput(
+                    mode="slot_filling",
+                    status="ready_for_dispatch",
+                    completion_state=0,
+                    completion_reason="router_ready_for_dispatch",
+                    intent_code="AG_PAY_BILL",
+                    recognition=RecognitionPlan(intent_code="AG_PAY_BILL"),
+                    slot_memory={"payment_item": "水电费", "amount": "100"},
+                    task_list=[bill_ready, transfer_waiting],
+                    current_task=bill_ready,
+                    diagnostics={"_router_context": bill_only_context},
+                ),
+            ]
+        ),
+    )
+    assert service.assistant is not None
+
+    service.handle_message(
+        RouterMessageRequest(custID="C0001", sessionId="cross_skill_session", txt="先缴费，再转账")
+    )
+    state_after_seed = service.assistant.sessions.get_task_state("cross_skill_session")
+    transfer_lease = next(
+        lease for lease in state_after_seed.context_leases if lease["task_id"] == "task_002"
+    )
+    assert transfer_lease["skill_names"] == ["finance-routing"]
+
+    service.handle_message(
+        RouterMessageRequest(custID="C0001", sessionId="cross_skill_session", txt="缴水电费100元")
+    )
+    state_after_bill_slots = service.assistant.sessions.get_task_state("cross_skill_session")
+    transfer_lease = next(
+        lease for lease in state_after_bill_slots.context_leases if lease["task_id"] == "task_002"
+    )
+    assert transfer_lease["skill_names"] == ["finance-routing"]
+
+    result = service.handle_task_completion(
+        TaskCompletionRequest(
+            custID="C0001",
+            sessionId="cross_skill_session",
+            taskId="task_001",
+            completionSignal=2,
+        )
+    )
+    saved = service.assistant.sessions.get_task_state("cross_skill_session")
+
+    assert result.final_frame.status == "waiting_user_input"
+    assert result.final_frame.intent_code == "AG_TRANS"
+    assert saved.current_task is not None
+    assert saved.current_task.taskId == "task_002"
+    assert saved.active_context["skill_names"] == ["finance-routing"]
+
+
+def test_cross_skill_single_message_keeps_transfer_lease_after_bill_completion(
+    tmp_path: Path,
+) -> None:
+    bill_waiting = PlannedTask(
+        taskId="task_001",
+        intent_code="AG_PAY_BILL",
+        status="waiting_user_input",
+        title="缴费",
+    )
+    transfer_waiting = PlannedTask(
+        taskId="task_002",
+        intent_code="AG_TRANS",
+        status="waiting_user_input",
+        title="转账",
+    )
+    router_context = {
+        "agent_contexts": ["/tmp/agent.md"],
+        "metadata_skills": ["bill-payment-routing", "finance-routing"],
+        "skill_names": ["bill-payment-routing", "finance-routing"],
+        "skill_intent_map": {
+            "bill-payment-routing": ["AG_PAY_BILL"],
+            "finance-routing": ["AG_TRANS"],
+        },
+        "intent_skill_map": {
+            "AG_PAY_BILL": ["bill-payment-routing"],
+            "AG_TRANS": ["finance-routing"],
+        },
+    }
+    service = IntentRouterHarnessService.from_spec(
+        _write_minimal_harness(tmp_path),
+        message_planner=SequencePlanner(
+            [
+                PlannerOutput(
+                    mode="multi_task",
+                    status="waiting_user_input",
+                    completion_state=0,
+                    completion_reason="router_waiting_user_input",
+                    intent_code="AG_PAY_BILL",
+                    recognition=RecognitionPlan(intent_code="AG_PAY_BILL"),
+                    task_list=[bill_waiting, transfer_waiting],
+                    current_task=bill_waiting,
+                    message="请提供缴费名目和缴费金额",
+                    diagnostics={"_router_context": router_context},
+                )
+            ]
+        ),
+    )
+    assert service.assistant is not None
+
+    result = service.handle_message(
+        RouterMessageRequest(
+            custID="C0001",
+            sessionId="single_turn_cross_skill",
+            txt="先缴费，再转账",
+        )
+    )
+    saved = service.assistant.sessions.get_task_state("single_turn_cross_skill")
+
+    assert result.final_frame.task_list[1]["intent_code"] == "AG_TRANS"
+    assert saved.context_leases[1]["skill_names"] == ["finance-routing"]
+
+    completion = service.handle_task_completion(
+        TaskCompletionRequest(
+            custID="C0001",
+            sessionId="single_turn_cross_skill",
+            taskId="task_001",
+            completionSignal=2,
+        )
+    )
+    saved_after_completion = service.assistant.sessions.get_task_state("single_turn_cross_skill")
+
+    assert completion.final_frame.status == "waiting_user_input"
+    assert completion.final_frame.intent_code == "AG_TRANS"
+    assert saved_after_completion.current_task is not None
+    assert saved_after_completion.current_task.taskId == "task_002"
+    assert saved_after_completion.active_context["skill_names"] == ["finance-routing"]
 
 
 def test_current_task_status_is_not_downgraded_to_running(tmp_path: Path) -> None:

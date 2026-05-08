@@ -734,6 +734,8 @@ def _context_lease_for_task(
     router_context: dict[str, Any],
 ) -> dict[str, Any]:
     skill_names = _skill_names_for_intent(task.intent_code, router_context)
+    if not skill_names and _router_context_has_skill_maps(router_context):
+        return {}
     reference_ids = _reference_ids_for_skills(skill_names, router_context)
     agent_contexts = _string_list(router_context.get("agent_contexts"))
     metadata_skills = _string_list(router_context.get("metadata_skills"))
@@ -754,12 +756,14 @@ def _skill_names_for_intent(
     router_context: dict[str, Any],
 ) -> list[str]:
     intent_skill_map = router_context.get("intent_skill_map")
+    has_intent_skill_map = isinstance(intent_skill_map, dict)
     if isinstance(intent_skill_map, dict):
         mapped = _string_list(intent_skill_map.get(intent_code))
         if mapped:
             return mapped
 
     skill_intent_map = router_context.get("skill_intent_map")
+    has_skill_intent_map = isinstance(skill_intent_map, dict)
     if isinstance(skill_intent_map, dict):
         mapped = [
             str(skill_name)
@@ -769,8 +773,18 @@ def _skill_names_for_intent(
         if mapped:
             return mapped
 
+    if has_intent_skill_map or has_skill_intent_map:
+        return []
+
     skill_names = _string_list(router_context.get("skill_names"))
     return skill_names if len(skill_names) <= 1 else []
+
+
+def _router_context_has_skill_maps(router_context: dict[str, Any]) -> bool:
+    return isinstance(router_context.get("intent_skill_map"), dict) or isinstance(
+        router_context.get("skill_intent_map"),
+        dict,
+    )
 
 
 def _reference_ids_for_skills(
@@ -867,6 +881,9 @@ def _lease_for_next_task(
     task: PlannedTask,
 ) -> dict[str, Any]:
     if not active_context:
+        return {}
+    active_intent_code = str(active_context.get("intent_code") or "").strip()
+    if active_intent_code and active_intent_code != task.intent_code:
         return {}
     return {
         "task_id": task.taskId,
