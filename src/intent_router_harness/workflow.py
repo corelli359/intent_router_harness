@@ -21,14 +21,12 @@ class WorkflowToolSpec:
     """Machine-readable contract for one workflow tool."""
 
     intent_code: str
-    workflow_agent_id: str
-    app_code: str
-    path: str
+    url: str
     method: str = "POST"
-    stream: bool = True
-    slots_param_name: str = "slots_data"
-    slot_schema: dict[str, Any] | None = None
-    passthrough_config_variables: tuple[str, ...] = ()
+    headers: dict[str, str] | None = None
+    body: Any = None
+    workflow_agent_id: str = ""
+    app_code: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,13 +102,13 @@ class HTTPWorkflowToolClient:
     ) -> WorkflowToolResult:
         if spec.method.upper() != "POST":
             raise WorkflowToolError(f"unsupported workflow method: {spec.method}")
-        url = _join_url(self.settings.base_url, spec.path)
+        url = _join_url(self.settings.base_url, spec.url)
         raw_body = json.dumps(request_payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(
             url,
             data=raw_body,
             method="POST",
-            headers={
+            headers=spec.headers or {
                 "Accept": "text/event-stream",
                 "Cache-Control": "no-cache",
                 "Content-Type": "application/json",
@@ -140,20 +138,15 @@ def load_workflow_tool_specs(skills: SkillLibrary) -> dict[str, WorkflowToolSpec
                 continue
             spec = WorkflowToolSpec(
                 intent_code=str(payload.get("intent_code") or "").strip(),
+                url=str(payload.get("url") or payload.get("path") or "").strip(),
+                method=str(payload.get("method") or "POST").strip() or "POST",
+                headers=_string_dict(payload.get("headers")),
+                body=payload.get("body"),
                 workflow_agent_id=str(payload.get("workflow_agent_id") or "").strip(),
                 app_code=str(payload.get("app_code") or "").strip(),
-                path=str(payload.get("path") or "").strip(),
-                method=str(payload.get("method") or "POST").strip() or "POST",
-                stream=bool(payload.get("stream", True)),
-                slots_param_name=str(payload.get("slots_param_name") or "slots_data").strip()
-                or "slots_data",
-                slot_schema=payload.get("slot_schema") if isinstance(payload.get("slot_schema"), dict) else None,
-                passthrough_config_variables=tuple(
-                    _string_list(payload.get("passthrough_config_variables"))
-                ),
             )
-            if not spec.intent_code or not spec.path:
-                raise WorkflowToolError(f"workflow reference {reference.id!r} is missing intent_code or path")
+            if not spec.intent_code or not spec.url:
+                raise WorkflowToolError(f"workflow reference {reference.id!r} is missing intent_code or url")
             specs[spec.intent_code] = spec
     return specs
 
@@ -169,31 +162,13 @@ def build_workflow_request_payload(
     request: RouterMessageRequest,
     task: PlannedTask,
 ) -> dict[str, Any]:
-    """Build the workflow use_as_tool request from passthrough values and slots."""
-    values = _config_variable_map(request.config_variables)
-    values.setdefault("custID", request.custID)
-    values.setdefault("sessionID", request.sessionId)
-    values.setdefault("agentSessionID", request.sessionId)
-    values.setdefault("currentDisplay", _current_display_value(request.currentDisplay))
-
-    config_variables: list[dict[str, Any]] = []
-    for name in spec.passthrough_config_variables:
-        if name in values:
-            config_variables.append({"name": name, "value": values[name]})
-    if "custID" not in {item["name"] for item in config_variables}:
-        config_variables.insert(0, {"name": "custID", "value": request.custID})
-    config_variables.append(
-        {
-            "name": spec.slots_param_name,
-            "value": json.dumps(task.slot_memory, ensure_ascii=False),
-        }
-    )
-    return {
-        "session_id": request.sessionId,
-        "txt": request.txt,
-        "stream": spec.stream,
-        "config_variables": config_variables,
-    }
+    """Render the workflow HTTP body template from request, config variables, and slots."""
+    if spec.body is not None:
+        rendered = _render_template(spec.body, request=request, task=task)
+        if not isinstance(rendered, dict):
+            raise WorkflowToolError("workflow body template must render to a JSON object")
+        return rendered
+    return _legacy_workflow_request_payload(request=request, task=task)
 
 
 def parse_workflow_sse(text: str) -> WorkflowToolResult:
@@ -244,6 +219,76 @@ def _workflow_reference_payload(body: str) -> dict[str, Any] | None:
     return payload
 
 
+def _render_template(value: Any, *, request: RouterMessageRequest, task: PlannedTask) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _render_template(item, request=request, task=task)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_render_template(item, request=request, task=task) for item in value]
+    if isinstance(value, str) and value.startswith("$") and value.count("$") == 1:
+        return _resolve_template_variable(value[1:], request=request, task=task)
+    return value
+
+
+def _resolve_template_variable(name: str, *, request: RouterMessageRequest, task: PlannedTask) -> Any:
+    config = _config_variable_map(request.config_variables)
+    variables: dict[str, Any] = {
+        "sessionId": request.sessionId,
+        "txt": request.txt,
+        "custID": request.custID,
+        "currentDisplay": _current_display_value(request.currentDisplay),
+        "stream": request.stream,
+        "config": config,
+        "slot_memory": task.slot_memory,
+        "slot_memory_json": json.dumps(task.slot_memory, ensure_ascii=False),
+        "slots": task.slot_memory,
+        "slots_json": json.dumps(task.slot_memory, ensure_ascii=False),
+    }
+    if name in variables:
+        return variables[name]
+    if name.startswith("config."):
+        return config.get(name.removeprefix("config."), "")
+    if name.startswith("slot."):
+        return _nested_lookup(task.slot_memory, name.removeprefix("slot."))
+    raise WorkflowToolError(f"unknown workflow template variable: ${name}")
+
+
+def _nested_lookup(values: dict[str, Any], path: str) -> Any:
+    current: Any = values
+    for part in path.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
+
+def _legacy_workflow_request_payload(
+    *,
+    request: RouterMessageRequest,
+    task: PlannedTask,
+) -> dict[str, Any]:
+    values = _config_variable_map(request.config_variables)
+    values.setdefault("custID", request.custID)
+    values.setdefault("sessionID", request.sessionId)
+    values.setdefault("agentSessionID", request.sessionId)
+    values.setdefault("currentDisplay", _current_display_value(request.currentDisplay))
+    return {
+        "session_id": request.sessionId,
+        "txt": request.txt,
+        "stream": True,
+        "config_variables": [
+            {"name": "custID", "value": values.get("custID", request.custID)},
+            {"name": "sessionID", "value": values.get("sessionID", request.sessionId)},
+            {"name": "currentDisplay", "value": values.get("currentDisplay", "")},
+            {"name": "agentSessionID", "value": values.get("agentSessionID", request.sessionId)},
+            {"name": "slots_data", "value": json.dumps(task.slot_memory, ensure_ascii=False)},
+        ],
+    }
+
+
 def _iter_sse_events(text: str):
     normalized = text.replace("\r\n", "\n")
     for raw_frame in normalized.split("\n\n"):
@@ -290,6 +335,12 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list | tuple):
         return [str(item).strip() for item in value if str(item).strip()]
     return [str(value).strip()]
+
+
+def _string_dict(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    return {str(key): str(item) for key, item in value.items()}
 
 
 def _truncate(value: str, limit: int) -> str:

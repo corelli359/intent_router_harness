@@ -357,12 +357,12 @@ class AssistantProtocolService:
         if spec is None:
             return [], task_state
         logger.info(
-            "workflow.start session_id=%s task_id=%s intent_code=%s workflow_agent_id=%s app_code=%s",
+            "workflow.start session_id=%s task_id=%s intent_code=%s method=%s url=%s",
             request.sessionId,
             current_task.taskId,
             current_task.intent_code,
-            spec.workflow_agent_id,
-            spec.app_code,
+            spec.method,
+            spec.url,
         )
         payload = build_workflow_request_payload(spec, request=request, task=current_task)
         running_task = current_task.model_copy(update={"status": "waiting_assistant_completion"}, deep=True)

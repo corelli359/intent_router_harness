@@ -159,6 +159,9 @@ class LLMMessagePlanner:
             return plan
 
         skill = self._skill_for_intent(request, current_task.intent_code)
+        requested_reference_ids = tuple(
+            _merge_strings((*_default_slot_reference_ids(skill), *requested_reference_ids))
+        )
         prompt = self._render_slot_prompt(
             request=request,
             variables=variables,
@@ -1035,6 +1038,15 @@ def _truncate(value: str, max_chars: int) -> str:
 
 def _required_slots(skill: SkillDocument) -> tuple[str, ...]:
     return skill.required_slots
+
+
+def _default_slot_reference_ids(skill: SkillDocument) -> tuple[str, ...]:
+    return tuple(
+        reference.id
+        for reference in skill.references
+        if reference.id in {"slot_filling", "slot_rules"}
+        and not is_workflow_tool_reference_body(reference.body)
+    )
 
 
 def _slot_has_value(value: Any) -> bool:

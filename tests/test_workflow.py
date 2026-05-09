@@ -2,7 +2,75 @@ from __future__ import annotations
 
 import pytest
 
-from intent_router_harness.workflow import WorkflowToolError, parse_workflow_sse
+from intent_router_harness.contracts import PlannedTask, RouterMessageRequest
+from intent_router_harness.workflow import (
+    WorkflowToolError,
+    WorkflowToolSpec,
+    build_workflow_request_payload,
+    parse_workflow_sse,
+)
+
+
+def test_build_workflow_request_payload_renders_template_variables() -> None:
+    spec = WorkflowToolSpec(
+        intent_code="AG_TRANS",
+        url="/agent-api/workflow-agent/chatabc/use_as_tool",
+        body={
+            "session_id": "$sessionId",
+            "txt": "$txt",
+            "stream": True,
+            "config_variables": [
+                {"name": "custID", "value": "$custID"},
+                {"name": "display", "value": "$config.currentDisplay"},
+                {"name": "payee", "value": "$slot.payee_name"},
+                {"name": "slots_data", "value": "$slot_memory_json"},
+                {"name": "slots_object", "value": "$slot_memory"},
+            ],
+        },
+    )
+
+    payload = build_workflow_request_payload(
+        spec,
+        request=RouterMessageRequest(
+            sessionId="s1",
+            custID="C0001",
+            txt="给陈广荣转500元",
+            config_variables=[{"name": "currentDisplay", "value": "validator_page"}],
+        ),
+        task=PlannedTask(
+            taskId="task_001",
+            intent_code="AG_TRANS",
+            slot_memory={"payee_name": "陈广荣", "amount": 500},
+        ),
+    )
+
+    assert payload == {
+        "session_id": "s1",
+        "txt": "给陈广荣转500元",
+        "stream": True,
+        "config_variables": [
+            {"name": "custID", "value": "C0001"},
+            {"name": "display", "value": "validator_page"},
+            {"name": "payee", "value": "陈广荣"},
+            {"name": "slots_data", "value": '{"payee_name": "陈广荣", "amount": 500}'},
+            {"name": "slots_object", "value": {"payee_name": "陈广荣", "amount": 500}},
+        ],
+    }
+
+
+def test_build_workflow_request_payload_rejects_unknown_template_variable() -> None:
+    spec = WorkflowToolSpec(
+        intent_code="AG_TRANS",
+        url="/agent-api/workflow-agent/chatabc/use_as_tool",
+        body={"bad": "$unknown"},
+    )
+
+    with pytest.raises(WorkflowToolError, match="unknown workflow template variable"):
+        build_workflow_request_payload(
+            spec,
+            request=RouterMessageRequest(sessionId="s1", custID="C0001", txt="hi"),
+            task=PlannedTask(taskId="task_001", intent_code="AG_TRANS"),
+        )
 
 
 def test_parse_workflow_sse_extracts_node_output_as_whole() -> None:

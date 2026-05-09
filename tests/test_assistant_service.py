@@ -104,11 +104,24 @@ class FakeWorkflowClient:
 def _transfer_workflow_spec() -> WorkflowToolSpec:
     return WorkflowToolSpec(
         intent_code="AG_TRANS",
-        workflow_agent_id="workflow-agent-1-1b14f16b",
-        app_code="chatabc",
-        path="/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",
-        slots_param_name="slots_data",
-        passthrough_config_variables=("custID", "sessionID", "currentDisplay", "agentSessionID"),
+        url="/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",
+        headers={
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Content-Type": "application/json",
+        },
+        body={
+            "session_id": "$sessionId",
+            "txt": "$txt",
+            "stream": True,
+            "config_variables": [
+                {"name": "custID", "value": "$custID"},
+                {"name": "sessionID", "value": "$sessionId"},
+                {"name": "currentDisplay", "value": "$config.currentDisplay"},
+                {"name": "agentSessionID", "value": "$sessionId"},
+                {"name": "slots_data", "value": "$slot_memory_json"},
+            ],
+        },
     )
 
 
@@ -1695,3 +1708,82 @@ def test_llm_planner_removes_session_identifiers_from_prompt_context(tmp_path: P
     assert "display_agent_should_not_reach_llm" not in rendered_prompt
     assert "validator_page" not in rendered_prompt
     assert "business" not in rendered_prompt
+
+
+def test_llm_planner_loads_slot_filling_reference_by_default(tmp_path: Path) -> None:
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / "transfer-routing"
+    reference_dir = skill_dir / "references"
+    reference_dir.mkdir(parents=True)
+    (reference_dir / "slot_filling.md").write_text("默认提槽规则：必须提取 payee_name 和 amount。", encoding="utf-8")
+    (reference_dir / "workflow_tool.json").write_text(
+        json.dumps(
+            {
+                "type": "workflow_tool",
+                "intent_code": "AG_TRANS",
+                "method": "POST",
+                "url": "/secret/workflow/use_as_tool",
+                "body": {"slots": "$slot_memory_json"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: transfer-routing",
+                "description: 转账路由规则",
+                'intent_codes: ["AG_TRANS"]',
+                'required_slots: ["payee_name", "amount"]',
+                'references: [{"id":"slot_filling","path":"references/slot_filling.md","purpose":"转账提槽规则"},{"id":"workflow_tool","path":"references/workflow_tool.json","purpose":"执行模板"}]',
+                "---",
+                "# 转账路由",
+                "只描述意图边界。",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    spec_path = tmp_path / "planner-harness.toml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                'name = "planner-slot-reference"',
+                'version = "2026.05"',
+                f'skill_roots = ["{skills_root.as_posix()}"]',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    harness = load_prompt_harness(spec_path)
+    assert harness is not None
+    llm_client = FakeLLMClient(
+        [
+            json.dumps(
+                {
+                    "tasks": [
+                        {
+                            "taskId": "task_001",
+                            "intent_code": "AG_TRANS",
+                            "title": "转账",
+                            "source_text": "给陈广荣转500元",
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"slot_memory": {"payee_name": "陈广荣", "amount": 500}}),
+        ]
+    )
+    planner = LLMMessagePlanner(harness=harness, llm_client=llm_client)
+
+    plan = planner.plan_message(
+        RouterMessageRequest(custID="C0001", sessionId="slot_ref_session", txt="给陈广荣转500元"),
+        TaskRuntimeState(),
+    )
+
+    slot_prompt = "\n".join(message["content"] for message in llm_client.messages[-1])
+    assert plan.status == "ready_for_dispatch"
+    assert "默认提槽规则" in slot_prompt
+    assert "/secret/workflow/use_as_tool" not in slot_prompt

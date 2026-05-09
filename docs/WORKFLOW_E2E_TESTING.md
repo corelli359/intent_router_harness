@@ -4,6 +4,7 @@
 
 - 前端调用 Router `/api/v1/message`。
 - Router 识别转账意图并提取 slots。
+- 提槽阶段默认加载 `transfer-routing/references/slot_filling.md`。
 - `executionMode=execute` 时 Router 调用 mock workflow。
 - mock workflow 的每个 `additional_kwargs.node_output` 被整体映射到 Router SSE 的 `output`。
 - 最终返回 `completed / workflow_done`。
@@ -44,7 +45,7 @@ mock 当前内置了几个子工作流 endpoint：
 
 | workflow agent id | 用途 |
 | --- | --- |
-| `workflow-agent-1-1b14f16b` | 转账 workflow，匹配 `transfer-routing/references/workflow_tool.json`。 |
+| `workflow-agent-1-1b14f16b` | 转账 workflow，匹配 `transfer-routing/references/workflow_tool.json` 的 HTTP 模板。 |
 | `workflow-agent-payee` | 收款人列表示例 workflow。 |
 | `workflow-agent-bill` | 缴费示例 workflow。 |
 
@@ -88,6 +89,7 @@ http://localhost:8766/validator
 预期 UI 结果：
 
 - trace 中出现 `Skill渐进式加载`，当前任务加载 `skill=transfer-routing`。
+- trace 中出现 `Reference正文加载`，加载 `slot_filling`。
 - 业务帧先返回 `router_ready_for_dispatch`。
 - 随后返回多个 `workflow_node_output`。
 - 最终返回 `workflow_done`，状态为 `completed`。

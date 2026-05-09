@@ -68,30 +68,60 @@ Accept: text/event-stream
 | `router_only` | 只做意图识别、提槽和任务规划；槽齐返回 `ready_for_dispatch`，不调用 workflow。 |
 | `execute` | 槽齐后调用对应 workflow，并把 workflow `node_output` 流式返回。 |
 
-## 3. Skill Reference 定义 workflow 契约
+## 3. Skill 与 Reference 分层
 
-每个可执行子工作流通过 skill reference 声明调用契约。示例：
+建议每个场景按三层拆分：
+
+```text
+SKILL.md                意图路由/场景边界，模型在意图识别阶段使用。
+references/slot_filling.md   提槽业务规则，模型在提槽阶段默认加载。
+references/workflow_tool.json Router 执行期 HTTP 请求模板，模型不可见。
+```
+
+`SKILL.md` 的 references 示例：
+
+```json
+[
+  { "id": "slot_filling", "path": "references/slot_filling.md", "purpose": "转账提槽规则" },
+  { "id": "payee_list", "path": "references/payee_list.md", "purpose": "已知收款人列表查询接口说明" },
+  { "id": "workflow_tool", "path": "references/workflow_tool.json", "purpose": "转账子工作流 HTTP 请求模板，仅供 Router 执行阶段读取" }
+]
+```
+
+加载规则：
+
+- 意图识别阶段只使用 skill metadata 和轻量正文。
+- 提槽阶段自动加载 `slot_filling` reference。
+- 模型仍可通过 `requested_references` 请求额外 reference，例如 `payee_list`。
+- `workflow_tool.json` 永远不进入模型 prompt，只供 Router 执行阶段读取。
+
+## 4. Workflow HTTP 模板
+
+每个可执行子工作流通过 `workflow_tool.json` 声明 HTTP 请求模板。模板本身保持最终请求结构，只在动态字段使用 `$变量`。示例：
 
 ```json
 {
   "type": "workflow_tool",
   "intent_code": "AG_TRANS",
-  "workflow_agent_id": "workflow-agent-1-1b14f16b",
-  "app_code": "chatabc",
-  "path": "/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",
   "method": "POST",
-  "stream": true,
-  "slots_param_name": "slots_data",
-  "slot_schema": {
-    "payee_name": "string",
-    "amount": "string"
+  "url": "/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",
+  "headers": {
+    "Accept": "text/event-stream",
+    "Cache-Control": "no-cache",
+    "Content-Type": "application/json"
   },
-  "passthrough_config_variables": [
-    "custID",
-    "sessionID",
-    "currentDisplay",
-    "agentSessionID"
-  ]
+  "body": {
+    "session_id": "$sessionId",
+    "txt": "$txt",
+    "stream": true,
+    "config_variables": [
+      { "name": "custID", "value": "$custID" },
+      { "name": "sessionID", "value": "$sessionId" },
+      { "name": "currentDisplay", "value": "$config.currentDisplay" },
+      { "name": "agentSessionID", "value": "$sessionId" },
+      { "name": "slots_data", "value": "$slot_memory_json" }
+    ]
+  }
 }
 ```
 
@@ -101,21 +131,32 @@ Accept: text/event-stream
 | --- | --- |
 | `type` | 固定为 `workflow_tool`。 |
 | `intent_code` | 该 workflow 对应的 Router 意图码。 |
-| `workflow_agent_id` | 子工作流 Agent ID，仅供 Router 执行侧使用。 |
-| `app_code` | 应用或渠道标识。 |
-| `path` | workflow `use_as_tool` 路径。 |
+| `url` | workflow `use_as_tool` 路径，会拼接到 `ROUTER_WORKFLOW_BASE_URL` 后。 |
 | `method` | 当前支持 `POST`。 |
-| `stream` | 调 workflow 时是否请求流式响应，通常为 `true`。 |
-| `slots_param_name` | slots 注入到 workflow 的参数名，默认 `slots_data`。 |
-| `slot_schema` | 模型需要填写的 slots 结构。 |
-| `passthrough_config_variables` | 从前端透传给 workflow 的变量名。 |
+| `headers` | workflow HTTP 请求头。 |
+| `body` | workflow HTTP 请求体模板。 |
 
 注意：
 
 - workflow reference 是 Router 执行契约，不作为普通 reference 正文注入模型 prompt。
-- 模型可见的是 skill 中的槽位提取规则和必要的 `slot_schema` 语义，不可见 workflow URL、Agent ID、透传参数等执行细节。
+- 模型可见的是 `slot_filling.md` 等业务 reference，不可见 workflow URL、headers、透传参数等执行细节。
+- 模板变量只在整个字符串是 `$变量` 时替换，不支持字符串中间插值。
 
-## 4. Router 调用 Workflow
+可用模板变量：
+
+| 变量 | 含义 |
+| --- | --- |
+| `$sessionId` | Router 请求 `sessionId`。 |
+| `$txt` | Router 请求 `txt`。 |
+| `$custID` | Router 请求 `custID`。 |
+| `$currentDisplay` | Router 请求 `currentDisplay` 序列化结果；为空时是空字符串。 |
+| `$config` | 前端 `config_variables` 组装成的对象。 |
+| `$config.xxx` | 前端 `config_variables` 中 `name=xxx` 的值；缺省为空字符串。 |
+| `$slot_memory` | 当前任务完整 `slot_memory` 对象。 |
+| `$slot_memory_json` | 当前任务 `slot_memory` 的 JSON 字符串。 |
+| `$slot.xxx` | 当前任务单个槽位。 |
+
+## 5. Router 调用 Workflow
 
 当 planner 输出当前任务：
 
@@ -138,7 +179,7 @@ Accept: text/event-stream
 }
 ```
 
-Router 根据 workflow reference 构造内部请求：
+Router 根据 workflow reference 渲染内部请求：
 
 ```http
 POST {ROUTER_WORKFLOW_BASE_URL}/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool
@@ -164,19 +205,6 @@ Content-Type: application/json
 }
 ```
 
-参数来源：
-
-| workflow 参数 | 来源 |
-| --- | --- |
-| `session_id` | Router 请求 `sessionId`。 |
-| `txt` | Router 请求 `txt`。 |
-| `stream` | workflow reference 中的 `stream`。 |
-| `custID` | Router 请求 `custID`。 |
-| `sessionID` | 前端 `config_variables`；缺省时使用 `sessionId`。 |
-| `currentDisplay` | 前端 `config_variables`；缺省为空字符串。 |
-| `agentSessionID` | 前端 `config_variables`；缺省时使用 `sessionId`。 |
-| `slots_data` | 当前任务 `slot_memory` 序列化后的 JSON 字符串。 |
-
 配置：
 
 ```bash
@@ -184,7 +212,7 @@ ROUTER_WORKFLOW_BASE_URL=http://aiml-pub.aisp.test.abc
 ROUTER_WORKFLOW_TIMEOUT_SECONDS=60
 ```
 
-## 5. Workflow SSE 响应
+## 6. Workflow SSE 响应
 
 workflow 返回 SSE：
 
@@ -239,7 +267,7 @@ node_output.typIntent
 node_output.answer
 ```
 
-## 6. Router SSE 返回映射
+## 7. Router SSE 返回映射
 
 workflow 每个 `event:message` 映射为 Router 的一个 `event: message`。
 
@@ -308,7 +336,7 @@ data: [DONE]
 
 最终完成帧的 `output` 使用最后一个 workflow message 的 `node_output`。
 
-## 7. 异常处理
+## 8. 异常处理
 
 以下情况视为 workflow 调用失败：
 
@@ -335,7 +363,7 @@ data: [DONE]
 }
 ```
 
-## 8. 状态流转
+## 9. 状态流转
 
 `router_only`：
 
