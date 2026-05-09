@@ -227,6 +227,25 @@ _VALIDATOR_HTML = """<!doctype html>
       margin-top: 12px;
     }
 
+    .recommend-row {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .recommend-tools {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .recommend-tools button {
+      min-height: 32px;
+      padding: 0 10px;
+      font-size: 12px;
+    }
+
     .toggle-row,
     .actions {
       display: flex;
@@ -472,6 +491,19 @@ _VALIDATOR_HTML = """<!doctype html>
               </label>
               <button id="sendBtn" type="button">发送消息</button>
             </div>
+            <div class="recommend-row">
+              <div class="recommend-tools">
+                <label><input id="useRecommendTask" type="checkbox"> 携带推荐卡片</label>
+                <button id="recommendTransferBtn" type="button" class="secondary">转账推荐</button>
+                <button id="recommendBillBtn" type="button" class="secondary">缴费推荐</button>
+                <button id="recommendBothBtn" type="button" class="secondary">两张推荐</button>
+                <button id="recommendClearBtn" type="button" class="secondary">清空推荐</button>
+              </div>
+              <label>
+                recommendTask JSON
+                <textarea id="recommendTaskText" placeholder='[{"id":"rec_001","title":"推荐任务","description":"推荐任务描述"}]'></textarea>
+              </label>
+            </div>
             <div class="toggle-row" style="margin-top: 12px;">
               <label><input id="debugTrace" type="checkbox" checked> 输出 trace 流</label>
               <label><input id="showDetails" type="checkbox"> 默认展开 JSON</label>
@@ -549,6 +581,12 @@ _VALIDATOR_HTML = """<!doctype html>
       executionMode: document.getElementById("executionMode"),
       sampleSelect: document.getElementById("sampleSelect"),
       messageText: document.getElementById("messageText"),
+      useRecommendTask: document.getElementById("useRecommendTask"),
+      recommendTaskText: document.getElementById("recommendTaskText"),
+      recommendTransferBtn: document.getElementById("recommendTransferBtn"),
+      recommendBillBtn: document.getElementById("recommendBillBtn"),
+      recommendBothBtn: document.getElementById("recommendBothBtn"),
+      recommendClearBtn: document.getElementById("recommendClearBtn"),
       debugTrace: document.getElementById("debugTrace"),
       showDetails: document.getElementById("showDetails"),
       sendBtn: document.getElementById("sendBtn"),
@@ -652,7 +690,7 @@ _VALIDATOR_HTML = """<!doctype html>
       els.sessionId.value = sessionId;
       localStorage.setItem("intent_router_validator_session", sessionId);
       const custID = els.custID.value.trim() || "C0001";
-      return {
+      const payload = {
         sessionId,
         txt: text,
         custID,
@@ -663,6 +701,41 @@ _VALIDATOR_HTML = """<!doctype html>
         stream: true,
         debugTrace: els.debugTrace.checked,
       };
+      const recommendTask = readRecommendTask();
+      if (recommendTask !== null) {
+        payload.recommendTask = recommendTask;
+      }
+      return payload;
+    }
+
+    function readRecommendTask() {
+      if (!els.useRecommendTask.checked) {
+        return null;
+      }
+      const raw = els.recommendTaskText.value.trim();
+      if (!raw) {
+        return [];
+      }
+      try {
+        const value = JSON.parse(raw);
+        if (!Array.isArray(value)) {
+          throw new Error("recommendTask 必须是数组");
+        }
+        return value;
+      } catch (error) {
+        setStatus("error", error.message || "recommendTask JSON 无效");
+        throw error;
+      }
+    }
+
+    function setRecommendTask(items) {
+      els.recommendTaskText.value = JSON.stringify(items, null, 2);
+      els.useRecommendTask.checked = true;
+    }
+
+    function clearRecommendTask() {
+      els.recommendTaskText.value = "";
+      els.useRecommendTask.checked = false;
     }
 
     function buildCompletionPayload() {
@@ -685,7 +758,12 @@ _VALIDATOR_HTML = """<!doctype html>
         setStatus("error", "请输入消息");
         return;
       }
-      const payload = buildMessagePayload(text);
+      let payload;
+      try {
+        payload = buildMessagePayload(text);
+      } catch (_error) {
+        return;
+      }
       appendBubble("user", "user", text, payload);
       els.messageText.value = "";
       await postSse(apiPath("/api/v1/message"), payload);
@@ -934,6 +1012,39 @@ _VALIDATOR_HTML = """<!doctype html>
 
     els.sendBtn.addEventListener("click", sendMessage);
     els.completeBtn.addEventListener("click", completeTask);
+    els.recommendTransferBtn.addEventListener("click", () => {
+      setRecommendTask([
+        {
+          id: "rec_transfer",
+          title: "推荐任务",
+          description: "给指定收款人转账",
+        },
+      ]);
+    });
+    els.recommendBillBtn.addEventListener("click", () => {
+      setRecommendTask([
+        {
+          id: "rec_bill",
+          title: "推荐任务",
+          description: "缴纳水电费或话费",
+        },
+      ]);
+    });
+    els.recommendBothBtn.addEventListener("click", () => {
+      setRecommendTask([
+        {
+          id: "rec_transfer",
+          title: "推荐任务",
+          description: "给指定收款人转账",
+        },
+        {
+          id: "rec_bill",
+          title: "推荐任务",
+          description: "缴纳水电费或话费",
+        },
+      ]);
+    });
+    els.recommendClearBtn.addEventListener("click", clearRecommendTask);
     els.newSessionBtn.addEventListener("click", () => {
       els.sessionId.value = newSessionId();
       localStorage.setItem("intent_router_validator_session", els.sessionId.value);

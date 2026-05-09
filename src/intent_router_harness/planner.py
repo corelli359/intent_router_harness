@@ -337,6 +337,9 @@ class LLMMessagePlanner:
                         "一个 task 只能承载一个 intent_code；一个用户请求包含多个独立业务动作时，按用户表达顺序拆成多个 task。",
                         "每个 task 必须包含 taskId、intent_code、title、source_text。source_text 是该任务对应的原始用户片段。",
                         "只返回 JSON：{\"tasks\":[...],\"reason\":\"...\"}。",
+                        "输出必须是原始 JSON 对象文本，第一个字符必须是 {，最后一个字符必须是 }。",
+                        "禁止使用 Markdown、代码块、```json、解释性文字或任何 JSON 外层包装。",
+                        "不要输出思考过程，不要逐步展开分析，直接给出最终 JSON。",
                     ]
                 ),
                 agent_context,
@@ -444,6 +447,8 @@ class LLMMessagePlanner:
         system_parts = [
             "你负责对当前任务做补槽。只处理 current_task，不要修改、提槽或推进其他任务。",
             "只返回 JSON，字段允许：slot_memory、message、requested_references、diagnostics。",
+            "输出必须是原始 JSON 对象文本，第一个字符必须是 {，最后一个字符必须是 }。",
+            "禁止使用 Markdown、代码块、```json、解释性文字或任何 JSON 外层包装。",
             "slot_memory 只能包含当前 skill 定义的当前任务槽位；不要输出 task_list，不要输出其他任务的槽位。",
             "数值类槽位按当前 skill 要求保存。只合并最新消息或 current_task.source_text 中有依据的新槽位。",
             "如果确实需要已暴露 reference 才能完成判断，返回 requested_references。",
@@ -455,8 +460,20 @@ class LLMMessagePlanner:
             system_parts.append("## 可用 Reference 摘要\n" + reference_summary)
         if reference_bodies:
             system_parts.append("## 已加载 Reference 正文\n" + reference_bodies)
+        system_parts.append(
+            "\n".join(
+                [
+                    "## 最终输出硬约束",
+                    "不要输出思考过程，不要逐步展开分析；即使 Skill 正文要求逐步分析，也只能在内部完成判断。",
+                    "必须直接输出一个原始 JSON 对象，首字符为 {，尾字符为 }。",
+                    "禁止输出 Markdown、```json 代码块、自然语言解释或任何 JSON 外文本。",
+                    "如果没有可补充槽位，也必须输出 JSON，例如 {\"slot_memory\":{},\"message\":\"请提供缺失信息\"}。",
+                ]
+            )
+        )
         human = "\n\n".join(
             [
+                "/no_think",
                 f"用户最新消息：\n{variables['message']}",
                 f"当前任务 JSON：\n{_llm_context_json(_task_json(current_task))}",
                 f"完整任务队列 JSON（只读，禁止修改非当前任务）：\n{_llm_context_json([_task_json(task) for task in task_list])}",
