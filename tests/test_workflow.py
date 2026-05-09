@@ -4,29 +4,19 @@ import pytest
 
 from intent_router_harness.contracts import PlannedTask, RouterMessageRequest
 from intent_router_harness.workflow import (
+    WorkflowHTTPRequest,
     WorkflowToolError,
+    WorkflowToolEvent,
     WorkflowToolSpec,
     build_workflow_request_payload,
     parse_workflow_sse,
 )
 
 
-def test_build_workflow_request_payload_renders_template_variables() -> None:
+def test_build_workflow_request_payload_accepts_model_request_in_allowed_urls() -> None:
     spec = WorkflowToolSpec(
         intent_code="AG_TRANS",
-        url="/agent-api/workflow-agent/chatabc/use_as_tool",
-        body={
-            "session_id": "$sessionId",
-            "txt": "$txt",
-            "stream": True,
-            "config_variables": [
-                {"name": "custID", "value": "$custID"},
-                {"name": "display", "value": "$config.currentDisplay"},
-                {"name": "payee", "value": "$slot.payee_name"},
-                {"name": "slots_data", "value": "$slot_memory_json"},
-                {"name": "slots_object", "value": "$slot_memory"},
-            ],
-        },
+        allowed_urls=("http://127.0.0.1:9876/agent-api/workflow-agent/chatabc/use_as_tool",),
     )
 
     payload = build_workflow_request_payload(
@@ -41,36 +31,56 @@ def test_build_workflow_request_payload_renders_template_variables() -> None:
             taskId="task_001",
             intent_code="AG_TRANS",
             slot_memory={"payee_name": "陈广荣", "amount": 500},
+            workflow_request={
+                "method": "POST",
+                "url": "http://127.0.0.1:9876/agent-api/workflow-agent/chatabc/use_as_tool",
+                "body": {
+                    "session_id": "s1",
+                    "txt": "给陈广荣转500元",
+                    "stream": True,
+                    "config_variables": [
+                        {"name": "slots_data", "value": '{"payee_name": "陈广荣", "amount": 500}'},
+                    ],
+                },
+            },
         ),
     )
 
-    assert payload == {
-        "session_id": "s1",
-        "txt": "给陈广荣转500元",
-        "stream": True,
-        "config_variables": [
-            {"name": "custID", "value": "C0001"},
-            {"name": "display", "value": "validator_page"},
-            {"name": "payee", "value": "陈广荣"},
-            {"name": "slots_data", "value": '{"payee_name": "陈广荣", "amount": 500}'},
-            {"name": "slots_object", "value": {"payee_name": "陈广荣", "amount": 500}},
-        ],
-    }
-
-
-def test_build_workflow_request_payload_rejects_unknown_template_variable() -> None:
-    spec = WorkflowToolSpec(
-        intent_code="AG_TRANS",
-        url="/agent-api/workflow-agent/chatabc/use_as_tool",
-        body={"bad": "$unknown"},
+    assert payload == WorkflowHTTPRequest(
+        method="POST",
+        url="http://127.0.0.1:9876/agent-api/workflow-agent/chatabc/use_as_tool",
+        body={
+            "session_id": "s1",
+            "txt": "给陈广荣转500元",
+            "stream": True,
+            "config_variables": [
+                {"name": "slots_data", "value": '{"payee_name": "陈广荣", "amount": 500}'},
+            ],
+        },
     )
 
-    with pytest.raises(WorkflowToolError, match="unknown workflow template variable"):
-        build_workflow_request_payload(
-            spec,
-            request=RouterMessageRequest(sessionId="s1", custID="C0001", txt="hi"),
-            task=PlannedTask(taskId="task_001", intent_code="AG_TRANS"),
-        )
+
+def test_build_workflow_request_payload_preserves_model_url_for_hooks() -> None:
+    spec = WorkflowToolSpec(
+        intent_code="AG_TRANS",
+        allowed_urls=("http://127.0.0.1:9876/agent-api/workflow-agent/chatabc/use_as_tool",),
+    )
+
+    payload = build_workflow_request_payload(
+        spec,
+        request=RouterMessageRequest(sessionId="s1", custID="C0001", txt="hi"),
+        task=PlannedTask(
+            taskId="task_001",
+            intent_code="AG_TRANS",
+            workflow_request={
+                "method": "POST",
+                "url": "http://127.0.0.1:9876/agent-api/other/chatabc/use_as_tool",
+                "body": {},
+            },
+        ),
+    )
+
+    assert payload.url == "http://127.0.0.1:9876/agent-api/other/chatabc/use_as_tool"
 
 
 def test_parse_workflow_sse_extracts_node_output_as_whole() -> None:

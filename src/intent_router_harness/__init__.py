@@ -35,6 +35,7 @@ from intent_router_harness.service import (
 from intent_router_harness.skills import SkillDocument, SkillLibrary, load_skill_document
 from intent_router_harness.workflow import (
     HTTPWorkflowToolClient,
+    WorkflowHTTPRequest,
     WorkflowSettings,
     WorkflowToolError,
     WorkflowToolEvent,
@@ -44,6 +45,7 @@ from intent_router_harness.workflow import (
     load_workflow_settings,
     load_workflow_tool_specs,
     parse_workflow_sse,
+    render_workflow_response_mapping,
 )
 from intent_router_harness.regression import (
     RegressionCase,
@@ -85,6 +87,7 @@ __all__ = [
     "SkillLibrary",
     "Variant",
     "WorkflowSettings",
+    "WorkflowHTTPRequest",
     "WorkflowToolError",
     "WorkflowToolEvent",
     "WorkflowToolResult",
@@ -99,6 +102,7 @@ __all__ = [
     "load_workflow_settings",
     "load_workflow_tool_specs",
     "parse_workflow_sse",
+    "render_workflow_response_mapping",
     "load_skill_document",
     "validate_case_transcripts",
     "validate_step_transcript",

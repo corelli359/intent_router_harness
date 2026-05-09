@@ -23,7 +23,13 @@ from intent_router_harness.workflow import (
     WorkflowToolEvent,
     WorkflowToolSpec,
     build_workflow_request_payload,
-    workflow_event_output,
+    render_workflow_response_mapping,
+)
+from intent_router_harness.workflow_hooks import (
+    WorkflowHook,
+    WorkflowHookError,
+    run_first_workflow_hook,
+    run_workflow_hooks,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,11 +47,13 @@ class AssistantProtocolService:
         sessions: InMemorySessionStore | None = None,
         workflow_client: WorkflowToolClient | None = None,
         workflow_tools: dict[str, WorkflowToolSpec] | None = None,
+        workflow_hooks: tuple[WorkflowHook, ...] = (),
     ) -> None:
         self.planner = planner
         self.sessions = sessions or InMemorySessionStore()
         self.workflow_client = workflow_client
         self.workflow_tools = dict(workflow_tools or {})
+        self.workflow_hooks = tuple(workflow_hooks)
 
     def handle_message(self, request: RouterMessageRequest) -> AssistantServiceResult:
         """Plan one user message and return assistant protocol frames."""
@@ -356,15 +364,35 @@ class AssistantProtocolService:
         spec = self.workflow_tools.get(current_task.intent_code)
         if spec is None:
             return [], task_state
+        try:
+            payload = build_workflow_request_payload(spec, request=request, task=current_task)
+            run_workflow_hooks(
+                self.workflow_hooks,
+                event="before_workflow_tool_call",
+                payload={
+                    "request": {
+                        "method": payload.method,
+                        "url": payload.url,
+                        "body": payload.body,
+                    },
+                    "allowed_urls": list(spec.allowed_urls),
+                },
+            )
+        except (WorkflowToolError, WorkflowHookError) as exc:
+            return self._workflow_failed_frame(
+                request,
+                task_state,
+                current_task,
+                error_summary={"code": "workflow_error", "message": str(exc)},
+            )
         logger.info(
             "workflow.start session_id=%s task_id=%s intent_code=%s method=%s url=%s",
             request.sessionId,
             current_task.taskId,
             current_task.intent_code,
-            spec.method,
-            spec.url,
+            payload.method,
+            payload.url,
         )
-        payload = build_workflow_request_payload(spec, request=request, task=current_task)
         running_task = current_task.model_copy(update={"status": "waiting_assistant_completion"}, deep=True)
         running_task_list = [
             running_task if task.taskId == running_task.taskId else task
@@ -383,50 +411,58 @@ class AssistantProtocolService:
                 current_task.intent_code,
                 exc,
             )
-            failed_task = current_task.model_copy(update={"status": "failed"}, deep=True)
-            failed_frame = AssistantProtocolFrame(
-                ok=False,
-                status="failed",
-                intent_code=current_task.intent_code,
-                completion_state=2,
-                completion_reason="workflow_error",
-                output={"error": {"code": "workflow_error", "message": str(exc)}},
-                slot_memory=current_task.slot_memory,
-                task_list=[
-                    (
-                        failed_task
-                        if task.taskId == failed_task.taskId
-                        else task
-                    ).model_dump(mode="json")
-                    for task in task_state.task_list
-                ],
-                current_task=failed_task.model_dump(mode="json"),
-                graph=task_state.graph,
-            )
-            return [failed_frame], _terminal_task_state(task_state, failed_task)
+            error_summary = {"code": "workflow_error", "message": str(exc)}
+            return self._workflow_failed_frame(request, task_state, current_task, error_summary=error_summary)
 
-        frames = [
-            _workflow_node_frame(
+        frames: list[AssistantProtocolFrame] = []
+        last_output: Any = None
+        for event in workflow_result.events:
+            frame = _workflow_node_frame(
                 event,
+                spec=spec,
+                request=request,
                 task=running_task,
                 task_list=running_task_list,
                 graph=task_state.graph,
+                last_output=last_output,
+                workflow_hooks=self.workflow_hooks,
+                workflow_url=payload.url,
             )
-            for event in workflow_result.events
-        ]
+            frames.append(frame)
+            last_output = frame.output
         completed_task = current_task.model_copy(update={"status": "completed"}, deep=True)
         completed_task_list = [
             completed_task if task.taskId == completed_task.taskId else task
             for task in task_state.task_list
         ]
+        done_mapping = render_workflow_response_mapping(
+            spec,
+            phase="done",
+            request=request,
+            task=completed_task,
+            last_output=last_output,
+        )
+        hook_done = run_first_workflow_hook(
+            self.workflow_hooks,
+            event="after_workflow_tool_call",
+            payload={
+                "phase": "done",
+                "url": payload.url,
+                "response_type": "sse",
+                "last": {"output": last_output},
+                "request": {"method": payload.method, "url": payload.url, "body": payload.body},
+            },
+        )
+        if hook_done is not None:
+            done_mapping = {**done_mapping, **hook_done}
         frames.append(
             AssistantProtocolFrame(
                 ok=True,
-                status="completed",
+                status=str(done_mapping.get("status") or "completed"),
                 intent_code=current_task.intent_code,
                 completion_state=2,
-                completion_reason="workflow_done",
-                output=workflow_result.final_output,
+                completion_reason=str(done_mapping.get("completion_reason") or "workflow_done"),
+                output=done_mapping.get("output") if "output" in done_mapping else workflow_result.final_output,
                 slot_memory=current_task.slot_memory,
                 task_list=[task.model_dump(mode="json") for task in completed_task_list],
                 current_task=completed_task.model_dump(mode="json"),
@@ -441,6 +477,65 @@ class AssistantProtocolService:
             len(workflow_result.events),
         )
         return frames, _terminal_task_state(task_state, completed_task)
+
+    def _workflow_failed_frame(
+        self,
+        request: RouterMessageRequest,
+        task_state: TaskRuntimeState,
+        current_task: PlannedTask,
+        *,
+        error_summary: dict[str, Any],
+    ) -> tuple[list[AssistantProtocolFrame], TaskRuntimeState]:
+        try:
+            spec = self.workflow_tools.get(current_task.intent_code) or WorkflowToolSpec(
+                intent_code=current_task.intent_code,
+            )
+            error_mapping = render_workflow_response_mapping(
+                spec,
+                phase="error",
+                request=request,
+                task=current_task,
+                error_summary=error_summary,
+            )
+            hook_error = run_first_workflow_hook(
+                self.workflow_hooks,
+                event="after_workflow_tool_call",
+                payload={
+                    "phase": "error",
+                    "url": current_task.workflow_request.get("url") if isinstance(current_task.workflow_request, dict) else "",
+                    "response_type": "sse",
+                    "error": error_summary,
+                },
+            )
+            if hook_error is not None:
+                error_mapping = {**error_mapping, **hook_error}
+        except (WorkflowToolError, WorkflowHookError):
+            error_mapping = {
+                "status": "failed",
+                "completion_reason": "workflow_error",
+                "output": {"error": error_summary},
+            }
+        failed_task = current_task.model_copy(update={"status": "failed"}, deep=True)
+        failed_frame = AssistantProtocolFrame(
+            ok=False,
+            status=str(error_mapping.get("status") or "failed"),
+            intent_code=current_task.intent_code,
+            completion_state=2,
+            completion_reason=str(error_mapping.get("completion_reason") or "workflow_error"),
+            output=error_mapping.get("output") or {"error": error_summary},
+            slot_memory=current_task.slot_memory,
+            task_list=[
+                (
+                    failed_task
+                    if task.taskId == failed_task.taskId
+                    else task
+                ).model_dump(mode="json")
+                for task in task_state.task_list
+            ],
+            current_task=failed_task.model_dump(mode="json"),
+            graph=task_state.graph,
+        )
+        return [failed_frame], _terminal_task_state(task_state, failed_task)
 
     def handle_task_completion(self, request: TaskCompletionRequest) -> AssistantServiceResult:
         """Apply assistant completion signal to current task state."""
@@ -676,17 +771,43 @@ class AssistantProtocolService:
 def _workflow_node_frame(
     event: WorkflowToolEvent,
     *,
+    spec: WorkflowToolSpec,
+    request: RouterMessageRequest,
     task: PlannedTask,
     task_list: list[PlannedTask],
     graph: dict[str, Any] | None,
+    last_output: Any,
+    workflow_hooks: tuple[WorkflowHook, ...] = (),
+    workflow_url: str = "",
 ) -> AssistantProtocolFrame:
+    mapping = render_workflow_response_mapping(
+        spec,
+        phase="message",
+        request=request,
+        task=task,
+        event=event,
+        last_output=last_output,
+    )
+    hook_mapping = run_first_workflow_hook(
+        workflow_hooks,
+        event="after_workflow_tool_call",
+        payload={
+            "phase": "message",
+            "url": workflow_url,
+            "response_type": "sse",
+            "event": event.data or {},
+            "last": {"output": last_output},
+        },
+    )
+    if hook_mapping is not None:
+        mapping = {**mapping, **hook_mapping}
     return AssistantProtocolFrame(
         ok=True,
-        status="waiting_assistant_completion",
+        status=str(mapping.get("status") or "waiting_assistant_completion"),
         intent_code=task.intent_code,
         completion_state=1,
-        completion_reason="workflow_node_output",
-        output=workflow_event_output(event),
+        completion_reason=str(mapping.get("completion_reason") or "workflow_node_output"),
+        output=mapping.get("output") if "output" in mapping else event.node_output,
         slot_memory=task.slot_memory,
         task_list=[item.model_dump(mode="json") for item in task_list],
         current_task=task.model_dump(mode="json"),

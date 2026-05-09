@@ -45,7 +45,7 @@ mock 当前内置了几个子工作流 endpoint：
 
 | workflow agent id | 用途 |
 | --- | --- |
-| `workflow-agent-1-1b14f16b` | 转账 workflow，匹配 `transfer-routing/references/workflow_tool.json` 的 HTTP 模板。 |
+| `workflow-agent-1-1b14f16b` | 转账 workflow，URL 由模型按 `transfer-routing/references/workflow_request.md` 输出，并由 harness 通用配置中的 `workflow.allowed_urls` 白名单校验。 |
 | `workflow-agent-payee` | 收款人列表示例 workflow。 |
 | `workflow-agent-bill` | 缴费示例 workflow。 |
 
@@ -56,7 +56,6 @@ mock 当前内置了几个子工作流 endpoint：
 终端 B：
 
 ```bash
-ROUTER_WORKFLOW_BASE_URL=http://127.0.0.1:9876 \
 .venv/bin/intent-router-harness serve examples/finance-router-harness.toml --port 8766
 ```
 
@@ -89,7 +88,7 @@ http://localhost:8766/validator
 预期 UI 结果：
 
 - trace 中出现 `Skill渐进式加载`，当前任务加载 `skill=transfer-routing`。
-- trace 中出现 `Reference正文加载`，加载 `slot_filling`。
+- trace 中出现 `Reference正文加载`，加载 `slot_filling` 和 `workflow_request`。
 - 业务帧先返回 `router_ready_for_dispatch`。
 - 随后返回多个 `workflow_node_output`。
 - 最终返回 `workflow_done`，状态为 `completed`。
@@ -122,7 +121,7 @@ http://localhost:8766/validator
 }
 ```
 
-`slots_data` 中的 `amount` 可能是字符串 `"500"` 或数字 `500`，取决于模型当轮输出；Router 会整体序列化当前 `slot_memory`。
+`slots_data` 中的 `amount` 可能是字符串 `"500"` 或数字 `500`，取决于模型当轮输出；该字段由模型按 `workflow_request.md` 组装，Router 负责校验 URL 白名单并使用内置 workflow SSE 请求头。
 
 ## 5. 命令行快速验证
 
@@ -140,7 +139,10 @@ curl -N -X POST http://127.0.0.1:8766/api/v1/message \
     "executionMode": "execute",
     "debugTrace": true,
     "config_variables": [
-      { "name": "currentDisplay", "value": "validator_page" }
+      { "name": "custID", "value": "C0001" },
+      { "name": "sessionID", "value": "e2e-transfer-001" },
+      { "name": "currentDisplay", "value": "validator_page" },
+      { "name": "agentSessionID", "value": "e2e-transfer-001" }
     ]
   }'
 ```

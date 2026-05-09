@@ -252,6 +252,4 @@ def _load_optional_workflow_client(env_file: str | Path | None) -> HTTPWorkflowT
     if env_file is None:
         return None
     settings = load_workflow_settings(env_file)
-    if settings is None:
-        return None
     return HTTPWorkflowToolClient(settings)

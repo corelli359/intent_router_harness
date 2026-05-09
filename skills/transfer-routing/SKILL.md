@@ -3,12 +3,12 @@ name: transfer-routing
 description: 掌银转账意图识别技能。用于判断用户是否有掌银转账意图。
 intent_codes: ["AG_TRANS"]
 required_slots: ["payee_name", "amount"]
-references: [{"id": "slot_filling", "path": "references/slot_filling.md", "purpose": "转账提槽规则"}, {"id": "payee_list", "path": "references/payee_list.md", "purpose": "已知收款人列表查询接口说明"}, {"id": "workflow_tool", "path": "references/workflow_tool.json", "purpose": "转账子工作流 HTTP 请求模板，仅供 Router 执行阶段读取"}]
+references: [{"id": "slot_filling", "path": "references/slot_filling.md", "purpose": "转账提槽规则"}, {"id": "workflow_request", "path": "references/workflow_request.md", "purpose": "转账子工作流接口与参数组装说明"}]
 ---
 
 # 掌银转账意图识别
 
-用于判断用户是否表达掌银转账意图。提槽规则由 `slot_filling` reference 提供；子工作流调用模板由 `workflow_tool` reference 提供。
+用于判断用户是否表达掌银转账意图。提槽规则由 `slot_filling` reference 提供；子工作流请求组装由 `workflow_request` reference 提供；URL 白名单和 response 处理由 Router hooks 提供。
 
 ## 第一阶段：转账意图与支持范围判定
 
@@ -130,5 +130,4 @@ references: [{"id": "slot_filling", "path": "references/slot_filling.md", "purpo
 ## 路由约束
 
 - SKILL 正文只负责意图边界，不负责完整提槽规则。
-- 不要在模型输出中生成 HTTP 请求、URL、headers 或 workflow 参数。
-- 槽位齐全后的执行由 Router 根据 `workflow_tool` reference 完成。
+- 槽位齐全后，按 `workflow_request` reference 输出 `workflow_request`。

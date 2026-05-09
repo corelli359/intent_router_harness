@@ -95,6 +95,7 @@ class PlannedTask(BaseModel):
     title: str = ""
     slot_memory: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
+    workflow_request: dict[str, Any] = Field(default_factory=dict)
 
 
 class PlannerOutput(BaseModel):
@@ -114,9 +115,10 @@ class PlannerOutput(BaseModel):
     requested_references: list[str] = Field(default_factory=list)
     message: str = ""
     output: Any = Field(default_factory=dict)
+    workflow_request: dict[str, Any] = Field(default_factory=dict)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
 
-    @field_validator("slot_memory", "output", "diagnostics", mode="before")
+    @field_validator("slot_memory", "output", "workflow_request", "diagnostics", mode="before")
     @classmethod
     def _none_to_dict(cls, value: Any) -> Any:
         if value is None:

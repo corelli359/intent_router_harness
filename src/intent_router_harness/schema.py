@@ -13,6 +13,12 @@ class SkillBinding(BaseModel):
     load: Literal["metadata", "body"] = "body"
 
 
+class WorkflowConfig(BaseModel):
+    """Global workflow tool configuration."""
+
+    allowed_urls: list[str] = Field(default_factory=list)
+
+
 class HarnessSpec(BaseModel):
     """Top-level spec for a standalone intent router harness."""
 
@@ -22,9 +28,12 @@ class HarnessSpec(BaseModel):
     enabled: bool = True
     agent_paths: list[str] = Field(default_factory=list)
     skill_roots: list[str] = Field(default_factory=list)
+    hook_roots: list[str] = Field(default_factory=list)
+    tool_roots: list[str] = Field(default_factory=list)
     max_skill_body_chars: int = Field(default=6000, gt=0)
     max_reference_body_chars: int = Field(default=6000, gt=0)
     max_reference_count: int = Field(default=4, gt=0)
+    workflow: WorkflowConfig = Field(default_factory=WorkflowConfig)
     bindings: list[SkillBinding] = Field(default_factory=list)
 
 

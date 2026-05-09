@@ -23,7 +23,9 @@ project owns its own specs, skills, regression data, tests, and local service.
 ## Layout
 
 - `src/intent_router_harness`: router runtime, service, session, LLM, and skill loading code.
-- `examples`: sample service specs.
+- `examples`: sample service specs, mock servers, and local clients.
+- `hooks`: workflow tool lifecycle hooks. Hook commands are runtime-only and never rendered into prompts.
+- `tools`: command-backed runtime tools, including workflow API execution.
 - `regressions`: structured regression suites.
 - `skills`: sample business skills and references.
 - `tests`: pytest coverage for service behavior and protocol rules.
@@ -36,6 +38,8 @@ PYTHONPATH=src python -m intent_router_harness show-suite regressions/assistant_
 PYTHONPATH=src python -m intent_router_harness llm-smoke --env-file .env.local
 PYTHONPATH=src python -m intent_router_harness serve examples/finance-router-harness.toml --port 8765
 PYTHONPATH=src python -m intent_router_harness serve-asgi --host 0.0.0.0 --port 8765
+python examples/mock_workflow_server.py --host 127.0.0.1 --port 9876
+python examples/router_message_client.py --base-url http://127.0.0.1:8765 --execution-mode execute --txt '给陈广荣转500元'
 ```
 
 After installing the package, the same commands are available through

@@ -54,8 +54,5 @@ def _load_optional_workflow_client(env_file: str | Path | None) -> HTTPWorkflowT
         logger.info("workflow client disabled because workflow_env_file is not configured")
         return None
     settings = load_workflow_settings(env_file)
-    if settings is None:
-        logger.info("workflow client not configured env_file=%s", env_file)
-        return None
-    logger.info("workflow client configured env_file=%s base_url=%s", env_file, settings.base_url)
+    logger.info("workflow client configured env_file=%s timeout_seconds=%s", env_file, settings.timeout_seconds)
     return HTTPWorkflowToolClient(settings)

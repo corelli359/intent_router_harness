@@ -32,10 +32,14 @@ class PromptHarness:
         spec: HarnessSpec,
         skills: SkillLibrary,
         agent_contexts: tuple[AgentContext, ...] = (),
+        hook_roots: tuple[str, ...] = (),
+        tool_roots: tuple[str, ...] = (),
     ) -> None:
         self.spec = spec
         self.skills = skills
         self.agent_contexts = agent_contexts
+        self.hook_roots = hook_roots
+        self.tool_roots = tool_roots
 
 
 def load_prompt_harness(
@@ -67,6 +71,14 @@ def load_prompt_harness(
     roots.extend(str(Path(root).expanduser()) for root in (skill_roots or []))
     logger.info("resolved harness skill roots path=%s roots=%s", resolved_spec_path, roots)
     skills = SkillLibrary.from_roots(roots)
+    hook_roots = tuple(
+        str(_resolve_relative_path(resolved_spec_path.parent, root))
+        for root in spec.hook_roots
+    )
+    tool_roots = tuple(
+        str(_resolve_relative_path(resolved_spec_path.parent, root))
+        for root in spec.tool_roots
+    )
     agent_contexts = _load_agent_contexts(resolved_spec_path.parent, spec.agent_paths or ["agent.md"])
     logger.info(
         "initialized prompt harness name=%s version=%s agent_contexts=%s skill_count=%d skills=%s",
@@ -76,7 +88,13 @@ def load_prompt_harness(
         len(skills),
         skills.names(),
     )
-    return PromptHarness(spec=spec, skills=skills, agent_contexts=agent_contexts)
+    return PromptHarness(
+        spec=spec,
+        skills=skills,
+        agent_contexts=agent_contexts,
+        hook_roots=hook_roots,
+        tool_roots=tool_roots,
+    )
 
 
 def load_harness_spec(path: str | Path) -> HarnessSpec:
