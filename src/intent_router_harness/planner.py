@@ -119,7 +119,10 @@ class LLMMessagePlanner:
             "task_state_json": _llm_context_json(task_state.model_dump(mode="json", exclude_none=True)),
             "recommend_task_json": _llm_context_json(request.recommendTask),
             "recent_messages_json": "[]",
-            "config_variables_json": "[]",
+            "config_variables_json": json.dumps(
+                [item.model_dump(mode="json") for item in request.config_variables],
+                ensure_ascii=False,
+            ),
             "planner_output_schema_json": _planner_output_schema_json(),
         }
         trace_events: list[dict[str, Any]] = []
@@ -159,6 +162,9 @@ class LLMMessagePlanner:
             return plan
 
         skill = self._skill_for_intent(request, current_task.intent_code)
+        requested_reference_ids = tuple(
+            _merge_strings((*_default_slot_reference_ids(skill), *requested_reference_ids))
+        )
         prompt = self._render_slot_prompt(
             request=request,
             variables=variables,
@@ -443,9 +449,10 @@ class LLMMessagePlanner:
             )
         system_parts = [
             "你负责对当前任务做补槽。只处理 current_task，不要修改、提槽或推进其他任务。",
-            "只返回 JSON，字段允许：slot_memory、message、requested_references、diagnostics。",
+            "只返回 JSON，字段允许：slot_memory、workflow_request、message、requested_references、diagnostics。",
             "输出必须是原始 JSON 对象文本，第一个字符必须是 {，最后一个字符必须是 }。",
             "禁止使用 Markdown、代码块、```json、解释性文字或任何 JSON 外层包装。",
+            "如果已加载 workflow_request reference，且当前任务槽位齐全，需要按 reference 生成 workflow_request。",
             "slot_memory 只能包含当前 skill 定义的当前任务槽位；不要输出 task_list，不要输出其他任务的槽位。",
             "数值类槽位按当前 skill 要求保存。只合并最新消息或 current_task.source_text 中有依据的新槽位。",
             "如果确实需要已暴露 reference 才能完成判断，返回 requested_references。",
@@ -472,9 +479,11 @@ class LLMMessagePlanner:
             [
                 "/no_think",
                 f"用户最新消息：\n{variables['message']}",
+                f"执行模式：\n{variables['execution_mode']}",
                 f"当前任务 JSON：\n{_llm_context_json(_task_json(current_task))}",
                 f"完整任务队列 JSON（只读，禁止修改非当前任务）：\n{_llm_context_json([_task_json(task) for task in task_list])}",
                 f"当前任务已知槽位 JSON：\n{_llm_context_json(getattr(current_task, 'slot_memory', {}))}",
+                f"配置变量 JSON（可用于 workflow_request 参数组装）：\n{variables['config_variables_json']}",
                 f"任务运行态 JSON：\n{variables['task_state_json']}",
             ]
         )
@@ -617,8 +626,11 @@ class LLMMessagePlanner:
             else "router_waiting_user_input"
         )
         message = "" if status == "ready_for_dispatch" else _missing_slots_message(skill, missing_slots)
+        workflow_request = slot_payload.get("workflow_request")
+        if not isinstance(workflow_request, dict) or status != "ready_for_dispatch":
+            workflow_request = {}
         updated_current = current_task.model_copy(
-            update={"slot_memory": current_slots, "status": status},
+            update={"slot_memory": current_slots, "status": status, "workflow_request": workflow_request},
             deep=True,
         )
         updated_tasks = [
@@ -640,6 +652,7 @@ class LLMMessagePlanner:
             requested_references=requested_references,
             message=message,
             output={},
+            workflow_request=workflow_request,
             diagnostics={
                 "slot_payload": slot_payload,
                 "missing_slots": missing_slots,
@@ -811,6 +824,11 @@ def _planner_output_schema_json() -> str:
             "requested_references": "最终规划前需要加载的可选 reference id 列表，必须来自允许列表",
             "message": "面向用户的消息",
             "output": "协议输出对象；不要在 output 内包含 slot_memory",
+            "workflow_request": {
+                "method": "子工作流 HTTP 方法，例如 POST；只在槽位齐全且已加载 workflow_request reference 时输出",
+                "url": "子工作流完整 HTTP(S) URL，必须严格按 workflow_request reference 输出",
+                "body": "子工作流 JSON 请求体对象",
+            },
             "diagnostics": "调试对象",
         },
     }
@@ -1052,6 +1070,15 @@ def _truncate(value: str, max_chars: int) -> str:
 
 def _required_slots(skill: SkillDocument) -> tuple[str, ...]:
     return skill.required_slots
+
+
+def _default_slot_reference_ids(skill: SkillDocument) -> tuple[str, ...]:
+    return tuple(
+        reference.id
+        for reference in skill.references
+        if reference.id in {"slot_filling", "slot_rules", "workflow_request"}
+        and not is_workflow_tool_reference_body(reference.body)
+    )
 
 
 def _slot_has_value(value: Any) -> bool:

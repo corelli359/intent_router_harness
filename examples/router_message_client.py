@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal interface tester for POST /api/v1/message."""
+"""Minimal example client for POST /api/v1/message."""
 
 from __future__ import annotations
 
@@ -51,7 +51,10 @@ def build_assistant_to_router_payload(
 ) -> dict[str, Any]:
     """Build the same payload shape assistant-service forwards to router."""
     config_variables: list[dict[str, Any]] = [
+        {"name": "custID", "value": cust_id},
+        {"name": "sessionID", "value": session_id},
         {"name": "currentDisplay", "value": current_display},
+        {"name": "agentSessionID", "value": session_id},
     ]
     if slots_data:
         config_variables.append(

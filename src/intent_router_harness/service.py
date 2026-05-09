@@ -27,7 +27,9 @@ from intent_router_harness.regression import (
     validate_step_transcript,
 )
 from intent_router_harness.runtime import PromptHarness, load_prompt_harness
+from intent_router_harness.tool_runtime import load_command_tools
 from intent_router_harness.workflow import WorkflowToolClient, load_workflow_tool_specs
+from intent_router_harness.workflow_hooks import load_workflow_hooks
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +100,14 @@ class IntentRouterHarnessService:
         self.regression_suite = regression_suite
         self.llm_client = llm_client
         self.workflow_client = workflow_client
-        workflow_tools = load_workflow_tool_specs(harness.skills)
+        workflow_hooks = load_workflow_hooks(list(harness.hook_roots))
+        command_tools = load_command_tools(list(harness.tool_roots))
+        if workflow_client is not None and hasattr(workflow_client, "tool"):
+            workflow_client.tool = command_tools.get("workflow-api-call")
+        workflow_tools = load_workflow_tool_specs(
+            harness.skills,
+            allowed_urls=tuple(harness.spec.workflow.allowed_urls),
+        )
         planner = message_planner
         if planner is None and llm_client is not None:
             planner = LLMMessagePlanner(harness=harness, llm_client=llm_client)
@@ -107,6 +116,7 @@ class IntentRouterHarnessService:
                 planner=planner,
                 workflow_client=workflow_client,
                 workflow_tools=workflow_tools,
+                workflow_hooks=workflow_hooks,
             )
             if planner is not None
             else None

@@ -24,6 +24,7 @@ from intent_router_harness.server import create_server
 from intent_router_harness.service import IntentRouterHarnessService
 from intent_router_harness.session_store import InMemorySessionStore
 from intent_router_harness.workflow import (
+    WorkflowHTTPRequest,
     WorkflowToolError,
     WorkflowToolEvent,
     WorkflowToolResult,
@@ -87,13 +88,13 @@ class FakeWorkflowClient:
     ) -> None:
         self.events = events or []
         self.error = error
-        self.calls: list[tuple[WorkflowToolSpec, dict]] = []
+        self.calls: list[tuple[WorkflowToolSpec, WorkflowHTTPRequest]] = []
 
     def run_workflow(
         self,
         spec: WorkflowToolSpec,
         *,
-        request_payload: dict,
+        request_payload: WorkflowHTTPRequest,
     ) -> WorkflowToolResult:
         self.calls.append((spec, request_payload))
         if self.error is not None:
@@ -104,12 +105,34 @@ class FakeWorkflowClient:
 def _transfer_workflow_spec() -> WorkflowToolSpec:
     return WorkflowToolSpec(
         intent_code="AG_TRANS",
-        workflow_agent_id="workflow-agent-1-1b14f16b",
-        app_code="chatabc",
-        path="/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",
-        slots_param_name="slots_data",
-        passthrough_config_variables=("custID", "sessionID", "currentDisplay", "agentSessionID"),
+        allowed_urls=("http://127.0.0.1:9876/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",),
     )
+
+
+def _transfer_workflow_request(
+    *,
+    session_id: str = "1635501196813426",
+    cust_id: str = "1631102265490929",
+    text: str = "给陈广荣转500元",
+    current_display: str = "",
+    slots_json: str = '{"payee_name": "陈广荣", "amount": "500"}',
+) -> dict:
+    return {
+        "method": "POST",
+        "url": "http://127.0.0.1:9876/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool",
+        "body": {
+            "session_id": session_id,
+            "txt": text,
+            "stream": True,
+            "config_variables": [
+                {"name": "custID", "value": cust_id},
+                {"name": "sessionID", "value": session_id},
+                {"name": "currentDisplay", "value": current_display},
+                {"name": "agentSessionID", "value": session_id},
+                {"name": "slots_data", "value": slots_json},
+            ],
+        },
+    }
 
 
 def _write_minimal_harness(tmp_path: Path) -> Path:
@@ -1029,13 +1052,14 @@ def test_current_task_slot_memory_updates_protocol_and_session(tmp_path: Path) -
     assert saved.slot_memory == {"payee_name": "王阳明", "amount": "100"}
 
 
-def test_execute_ready_task_invokes_workflow_with_passthrough_and_slots(tmp_path: Path) -> None:
+def test_execute_ready_task_invokes_validated_workflow_request(tmp_path: Path) -> None:
     current_task = PlannedTask(
         taskId="task_001",
         intent_code="AG_TRANS",
         status="ready_for_dispatch",
         title="转账给陈广荣",
         slot_memory={"payee_name": "陈广荣", "amount": "500"},
+        workflow_request=_transfer_workflow_request(),
     )
     workflow_client = FakeWorkflowClient(
         [
@@ -1089,7 +1113,9 @@ def test_execute_ready_task_invokes_workflow_with_passthrough_and_slots(tmp_path
 
     assert len(workflow_client.calls) == 1
     _, payload = workflow_client.calls[0]
-    assert payload == {
+    assert payload.method == "POST"
+    assert payload.url == "http://127.0.0.1:9876/agent-api/workflow-agent-1-1b14f16b/chatabc/use_as_tool"
+    assert payload.body == {
         "session_id": "1635501196813426",
         "txt": "给陈广荣转500元",
         "stream": True,
@@ -1121,6 +1147,7 @@ def test_router_only_ready_task_does_not_invoke_workflow(tmp_path: Path) -> None
         intent_code="AG_TRANS",
         status="ready_for_dispatch",
         slot_memory={"payee_name": "陈广荣", "amount": "500"},
+        workflow_request=_transfer_workflow_request(cust_id="C0001"),
     )
     workflow_client = FakeWorkflowClient(
         [WorkflowToolEvent(node_id="end", node_title="结束", timestamp=None, node_output={"done": True})]
@@ -1164,6 +1191,7 @@ def test_workflow_node_output_is_opaque_for_string_and_array_values(tmp_path: Pa
         intent_code="AG_TRANS",
         status="ready_for_dispatch",
         slot_memory={"payee_name": "陈广荣", "amount": "500"},
+        workflow_request=_transfer_workflow_request(cust_id="C0001"),
     )
     workflow_client = FakeWorkflowClient(
         [
@@ -1210,6 +1238,7 @@ def test_workflow_error_returns_failed_frame_and_clears_runtime(tmp_path: Path) 
         intent_code="AG_TRANS",
         status="ready_for_dispatch",
         slot_memory={"payee_name": "陈广荣", "amount": "500"},
+        workflow_request=_transfer_workflow_request(cust_id="C0001"),
     )
     service = IntentRouterHarnessService.from_spec(
         _write_minimal_harness(tmp_path),
@@ -1623,7 +1652,7 @@ def test_llm_planner_allows_existing_unloaded_task_intent_in_task_list(tmp_path:
     assert [task.intent_code for task in plan.task_list] == ["AG_TRANS", "AG_PAY_BILL"]
 
 
-def test_llm_planner_removes_session_identifiers_from_prompt_context(tmp_path: Path) -> None:
+def test_llm_planner_exposes_config_variables_but_sanitizes_other_context(tmp_path: Path) -> None:
     spec_path = tmp_path / "planner-harness.toml"
     spec_path.write_text(
         "\n".join(
@@ -1686,12 +1715,78 @@ def test_llm_planner_removes_session_identifiers_from_prompt_context(tmp_path: P
     )
 
     rendered_prompt = "\n".join(message["content"] for message in llm_client.messages[-1])
-    assert "session_should_not_reach_llm" not in rendered_prompt
-    assert "agent_should_not_reach_llm" not in rendered_prompt
-    assert "cust_should_not_reach_llm" not in rendered_prompt
-    assert "nested_session_should_not_reach_llm" not in rendered_prompt
+    assert "session_should_not_reach_llm" in rendered_prompt
+    assert "agent_should_not_reach_llm" in rendered_prompt
+    assert "cust_should_not_reach_llm" in rendered_prompt
+    assert "nested_session_should_not_reach_llm" in rendered_prompt
     assert "recommend_session_should_not_reach_llm" not in rendered_prompt
     assert "recommend_agent_should_not_reach_llm" not in rendered_prompt
     assert "display_agent_should_not_reach_llm" not in rendered_prompt
-    assert "validator_page" not in rendered_prompt
-    assert "business" not in rendered_prompt
+    assert "validator_page" in rendered_prompt
+    assert "business" in rendered_prompt
+
+
+def test_llm_planner_loads_slot_filling_reference_by_default(tmp_path: Path) -> None:
+    skills_root = tmp_path / "skills"
+    skill_dir = skills_root / "transfer-routing"
+    reference_dir = skill_dir / "references"
+    reference_dir.mkdir(parents=True)
+    (reference_dir / "slot_filling.md").write_text("默认提槽规则：必须提取 payee_name 和 amount。", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: transfer-routing",
+                "description: 转账路由规则",
+                'intent_codes: ["AG_TRANS"]',
+                'required_slots: ["payee_name", "amount"]',
+                'references: [{"id":"slot_filling","path":"references/slot_filling.md","purpose":"转账提槽规则"}]',
+                "---",
+                "# 转账路由",
+                "只描述意图边界。",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    spec_path = tmp_path / "planner-harness.toml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                'name = "planner-slot-reference"',
+                'version = "2026.05"',
+                f'skill_roots = ["{skills_root.as_posix()}"]',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    harness = load_prompt_harness(spec_path)
+    assert harness is not None
+    llm_client = FakeLLMClient(
+        [
+            json.dumps(
+                {
+                    "tasks": [
+                        {
+                            "taskId": "task_001",
+                            "intent_code": "AG_TRANS",
+                            "title": "转账",
+                            "source_text": "给陈广荣转500元",
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"slot_memory": {"payee_name": "陈广荣", "amount": 500}}),
+        ]
+    )
+    planner = LLMMessagePlanner(harness=harness, llm_client=llm_client)
+
+    plan = planner.plan_message(
+        RouterMessageRequest(custID="C0001", sessionId="slot_ref_session", txt="给陈广荣转500元"),
+        TaskRuntimeState(),
+    )
+
+    slot_prompt = "\n".join(message["content"] for message in llm_client.messages[-1])
+    assert plan.status == "ready_for_dispatch"
+    assert "默认提槽规则" in slot_prompt
